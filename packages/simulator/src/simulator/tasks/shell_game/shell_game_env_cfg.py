@@ -57,7 +57,9 @@ def _make_cup_cfg(index: int, name_prefix: str, *, kinematic_enabled: bool) -> R
         prim_path=f"{{ENV_REGEX_NS}}/Scene/{name_prefix}_{index}",
         spawn=sim_utils.UsdFileCfg(
             usd_path=CUP_USD_PATH,
-            mass_props=MassPropertiesCfg(mass=0.1),
+            # PinkCup's MassAPI lives below the asset root, so Isaac Lab's
+            # generic spawn-time mass patch misses it. ShellGamePhaseManager
+            # authors the explicit cup mass on the actual rigid-body prims.
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=kinematic_enabled,
             ),

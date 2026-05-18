@@ -27,6 +27,8 @@ from .shell_game_env_cfg import (
     _cup_x_positions,
 )
 
+_CUP_MASS_KG = 0.1
+
 
 class Phase(IntEnum):
     REVEAL = 0
@@ -102,7 +104,10 @@ class ShellGamePhaseManager:
 
         # Phase 1-3 use separate kinematic script cups. Keep the dynamic
         # Act cups hidden so they cannot perturb the scripted shuffle.
+        self._apply_cup_mass_properties(env)
         self._set_script_cups_kinematic(env, True)
+        self._set_cup_family_visible(env, "script_cup", True)
+        self._set_cup_family_visible(env, "cup", False)
         self._hide_dynamic_cups(env)
 
         # Decide ball position
@@ -324,6 +329,12 @@ class ShellGamePhaseManager:
             self._set_named_cup_pose(env, f"cup_{i}", tuple(self._cup_positions[i]))
             self._clear_cup_velocity(env, dynamic_cup)
 
+        # Swap visibility explicitly. Moving scripted cups below the scene is
+        # still useful for collision separation, but visibility avoids a one-frame
+        # visual overlap that makes cups look larger at handoff.
+        self._set_cup_family_visible(env, "script_cup", False)
+        self._set_cup_family_visible(env, "cup", True)
+
         # Hide script cups before the next physics step, so script and dynamic
         # cups are never overlapping collision bodies during simulation.
         for i in range(5):
@@ -350,6 +361,32 @@ class ShellGamePhaseManager:
         for i in range(5):
             self._set_asset_kinematic(env, f"script_cup_{i}", enabled)
 
+    def _set_cup_family_visible(self, env: ManagerBasedRLEnv, family: str, visible: bool) -> None:
+        for i in range(5):
+            self._set_asset_visible(env, f"{family}_{i}", visible)
+
+    def _set_asset_visible(self, env: ManagerBasedRLEnv, asset_name: str, visible: bool) -> None:
+        try:
+            from pxr import UsdGeom
+        except Exception:
+            return
+
+        token = "inherited" if visible else "invisible"
+        for prim in self._iter_asset_prims(env, asset_name):
+            try:
+                imageable = UsdGeom.Imageable(prim)
+                if not imageable:
+                    continue
+                imageable.CreateVisibilityAttr().Set(token)
+            except Exception:
+                continue
+
+    def _apply_cup_mass_properties(self, env: ManagerBasedRLEnv) -> None:
+        """Author explicit cup mass on the actual rigid-body prims in the USD asset."""
+        for i in range(5):
+            self._set_asset_mass(env, f"cup_{i}", _CUP_MASS_KG)
+            self._set_asset_mass(env, f"script_cup_{i}", _CUP_MASS_KG)
+
     def _refresh_scene_buffers(self, env: ManagerBasedRLEnv) -> None:
         update = getattr(env.scene, "update", None)
         if not callable(update):
@@ -365,15 +402,7 @@ class ShellGamePhaseManager:
         except Exception:
             return
 
-        asset = env.scene[asset_name]
-        roots = list(getattr(asset, "prims", []))
-        stack = list(roots)
-        while stack:
-            prim = stack.pop()
-            try:
-                stack.extend(list(prim.GetAllChildren()))
-            except Exception:
-                pass
+        for prim in self._iter_asset_prims(env, asset_name):
             try:
                 if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
                     continue
@@ -382,6 +411,33 @@ class ShellGamePhaseManager:
                 rigid_api.CreateKinematicEnabledAttr(bool(enabled)).Set(bool(enabled))
             except Exception:
                 continue
+
+    def _set_asset_mass(self, env: ManagerBasedRLEnv, asset_name: str, mass_kg: float) -> None:
+        try:
+            from pxr import UsdPhysics
+        except Exception:
+            return
+
+        for prim in self._iter_asset_prims(env, asset_name):
+            try:
+                if not (prim.HasAPI(UsdPhysics.RigidBodyAPI) or prim.HasAPI(UsdPhysics.CollisionAPI)):
+                    continue
+                mass_api = UsdPhysics.MassAPI.Apply(prim)
+                mass_api.CreateMassAttr(float(mass_kg)).Set(float(mass_kg))
+                mass_api.CreateDensityAttr(0.0).Set(0.0)
+            except Exception:
+                continue
+
+    def _iter_asset_prims(self, env: ManagerBasedRLEnv, asset_name: str):
+        asset = env.scene[asset_name]
+        stack = list(getattr(asset, "prims", []))
+        while stack:
+            prim = stack.pop()
+            yield prim
+            try:
+                stack.extend(list(prim.GetAllChildren()))
+            except Exception:
+                pass
 
     def _clear_cup_velocity(self, env: ManagerBasedRLEnv, cup) -> None:
         """Clear scripted-phase or hidden-cup residual velocity before handoff."""
