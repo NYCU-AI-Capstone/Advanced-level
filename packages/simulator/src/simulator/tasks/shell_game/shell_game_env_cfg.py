@@ -52,14 +52,14 @@ def _cup_x_positions(num_cups: int) -> list[float]:
     return [start_x + i * CUP_SPACING for i in range(num_cups)]
 
 
-def _make_cup_cfg(index: int) -> RigidObjectCfg:
+def _make_cup_cfg(index: int, name_prefix: str, *, kinematic_enabled: bool) -> RigidObjectCfg:
     return RigidObjectCfg(
-        prim_path=f"{{ENV_REGEX_NS}}/Scene/cup_{index}",
+        prim_path=f"{{ENV_REGEX_NS}}/Scene/{name_prefix}_{index}",
         spawn=sim_utils.UsdFileCfg(
             usd_path=CUP_USD_PATH,
             mass_props=MassPropertiesCfg(mass=0.1),
             rigid_props=RigidBodyPropertiesCfg(
-                kinematic_enabled=True,
+                kinematic_enabled=kinematic_enabled,
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
@@ -98,11 +98,21 @@ class ShellGameSceneCfg(SingleArmFrankaTaskSceneCfg):
 
     scene: AssetBaseCfg = KITCHEN_CFG.replace(prim_path="{ENV_REGEX_NS}/Scene")
 
-    cup_0: RigidObjectCfg = _make_cup_cfg(0)
-    cup_1: RigidObjectCfg = _make_cup_cfg(1)
-    cup_2: RigidObjectCfg = _make_cup_cfg(2)
-    cup_3: RigidObjectCfg = _make_cup_cfg(3)
-    cup_4: RigidObjectCfg = _make_cup_cfg(4)
+    # Act cups are dynamic from spawn time. They stay hidden during scripted
+    # phases, then get pose-synced into view for robot interaction.
+    cup_0: RigidObjectCfg = _make_cup_cfg(0, "cup", kinematic_enabled=False)
+    cup_1: RigidObjectCfg = _make_cup_cfg(1, "cup", kinematic_enabled=False)
+    cup_2: RigidObjectCfg = _make_cup_cfg(2, "cup", kinematic_enabled=False)
+    cup_3: RigidObjectCfg = _make_cup_cfg(3, "cup", kinematic_enabled=False)
+    cup_4: RigidObjectCfg = _make_cup_cfg(4, "cup", kinematic_enabled=False)
+
+    # Script cups are kinematic visual/physics proxies for Reveal/Cover/Shuffle.
+    # They are hidden before Act so they never overlap the dynamic cups in sim.
+    script_cup_0: RigidObjectCfg = _make_cup_cfg(0, "script_cup", kinematic_enabled=True)
+    script_cup_1: RigidObjectCfg = _make_cup_cfg(1, "script_cup", kinematic_enabled=True)
+    script_cup_2: RigidObjectCfg = _make_cup_cfg(2, "script_cup", kinematic_enabled=True)
+    script_cup_3: RigidObjectCfg = _make_cup_cfg(3, "script_cup", kinematic_enabled=True)
+    script_cup_4: RigidObjectCfg = _make_cup_cfg(4, "script_cup", kinematic_enabled=True)
 
     ball: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Scene/ball",
