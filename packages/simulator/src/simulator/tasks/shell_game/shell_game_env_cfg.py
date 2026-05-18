@@ -57,9 +57,9 @@ def _make_cup_cfg(index: int) -> RigidObjectCfg:
         prim_path=f"{{ENV_REGEX_NS}}/Scene/cup_{index}",
         spawn=sim_utils.UsdFileCfg(
             usd_path=CUP_USD_PATH,
-            mass_props=MassPropertiesCfg(mass=0.1),
+            mass_props=MassPropertiesCfg(mass=0.001),
             rigid_props=RigidBodyPropertiesCfg(
-                kinematic_enabled=True,
+                kinematic_enabled=False,
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
@@ -111,9 +111,10 @@ class ShellGameSceneCfg(SingleArmFrankaTaskSceneCfg):
             visual_material=sim_utils.PreviewSurfaceCfg(
                 diffuse_color=(1.0, 0.5, 0.0),
             ),
-            mass_props=MassPropertiesCfg(mass=0.01),
+            mass_props=MassPropertiesCfg(mass=0.0001),
             rigid_props=RigidBodyPropertiesCfg(
-                kinematic_enabled=True,
+                kinematic_enabled=False,
+                disable_gravity=True,
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(

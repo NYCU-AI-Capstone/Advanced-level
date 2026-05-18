@@ -119,7 +119,7 @@ class ShellGameStateMachine(StateMachineBase):
             160,  # Phase 0: Move above the correct cup
             80,   # Phase 1: Descend to grasp
             20,   # Phase 2: Close gripper
-            100,  # Phase 3: Lift cup
+            200,  # Phase 3: Lift cup
         ]
 
     def set_phase_manager(self, phase_manager: ShellGamePhaseManager) -> None:

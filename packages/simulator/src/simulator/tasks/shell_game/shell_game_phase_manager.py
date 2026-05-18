@@ -321,33 +321,55 @@ class ShellGamePhaseManager:
         self._ball_revealed = True
 
     def _set_cups_kinematic(self, env: ManagerBasedRLEnv, enabled: bool) -> None:
-        """Toggle cup kinematic mode at the USD/PhysX layer when available."""
         try:
-            from pxr import PhysxSchema, UsdPhysics
-        except Exception:
+            import re
+            import omni.usd
+            from pxr import PhysxSchema, Usd, UsdPhysics
+        except Exception as exc:
+            print(f"[shell-debug] cannot import USD/PhysX APIs: {exc}")
             return
+
+        stage = omni.usd.get_context().get_stage()
+        total_changed = 0
 
         for i in range(self._num_cups):
             cup = env.scene[f"cup_{i}"]
-            roots = list(getattr(cup, "prims", []))
-            prims = []
+            cfg_path = getattr(getattr(cup, "cfg", None), "prim_path", "")
+            pattern = re.compile("^" + cfg_path + "$")
+
+            roots = [prim for prim in stage.Traverse() if pattern.match(str(prim.GetPath()))]
+            changed = 0
+            seen = []
+
             for root in roots:
-                prims.append(root)
-                try:
-                    prims.extend(list(root.GetAllChildren()))
-                except Exception:
-                    pass
-            for prim in prims:
-                try:
-                    if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                        continue
-                    api = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
-                    attr = api.GetKinematicEnabledAttr()
-                    if not attr:
-                        attr = api.CreateKinematicEnabledAttr()
-                    attr.Set(bool(enabled))
-                except Exception:
-                    continue
+                for prim in Usd.PrimRange(root):
+                    try:
+                        if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                            continue
+
+                        api = UsdPhysics.RigidBodyAPI.Apply(prim)
+                        attr = api.GetKinematicEnabledAttr()
+                        if not attr:
+                            attr = api.CreateKinematicEnabledAttr()
+
+
+                        before = attr.Get()
+                        attr.Set(bool(enabled))
+                        after = attr.Get()
+
+                        changed += 1
+                        seen.append(f"{prim.GetPath()}:{before}->{after}")
+                    except Exception as exc:
+                        seen.append(f"{prim.GetPath()}:ERR:{exc}")
+
+            total_changed += changed
+            print(
+                f"[shell-debug] cup_{i} cfg_path={cfg_path}, roots={[str(r.GetPath()) for r in roots]}, "
+                f"set kinematic={enabled}, changed={changed}, prims={seen}"
+            )
+
+        print(f"[shell-debug] total rigid bodies changed={total_changed}")
+
 
     def _set_cup_pose(
         self, env: ManagerBasedRLEnv, cup_index: int, pos: tuple[float, ...]
@@ -359,6 +381,10 @@ class ShellGamePhaseManager:
             dtype=torch.float32,
         ).repeat(env.num_envs, 1)
         cup.write_root_pose_to_sim(pose)
+        if hasattr(cup, "write_root_velocity_to_sim"):
+            cup.write_root_velocity_to_sim(
+                torch.zeros(env.num_envs, 6, device=env.device)
+            )
 
     def _set_ball_pose(
         self, env: ManagerBasedRLEnv, pos: tuple[float, ...]
