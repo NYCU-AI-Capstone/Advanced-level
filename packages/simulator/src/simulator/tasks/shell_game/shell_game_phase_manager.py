@@ -321,9 +321,9 @@ class ShellGamePhaseManager:
         self._ball_revealed = True
 
     def _set_cups_kinematic(self, env: ManagerBasedRLEnv, enabled: bool) -> None:
-        """Toggle cup kinematic mode at the USD/PhysX layer when available."""
+        """Toggle active cups between scripted kinematic motion and dynamic physics."""
         try:
-            from pxr import PhysxSchema, UsdPhysics
+            from pxr import UsdPhysics
         except Exception:
             return
 
@@ -331,23 +331,38 @@ class ShellGamePhaseManager:
             cup = env.scene[f"cup_{i}"]
             roots = list(getattr(cup, "prims", []))
             prims = []
-            for root in roots:
-                prims.append(root)
+            stack = list(roots)
+            while stack:
+                prim = stack.pop()
+                prims.append(prim)
                 try:
-                    prims.extend(list(root.GetAllChildren()))
+                    stack.extend(list(prim.GetAllChildren()))
                 except Exception:
                     pass
+
             for prim in prims:
                 try:
                     if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
                         continue
-                    api = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
-                    attr = api.GetKinematicEnabledAttr()
-                    if not attr:
-                        attr = api.CreateKinematicEnabledAttr()
-                    attr.Set(bool(enabled))
+                    rigid_api = UsdPhysics.RigidBodyAPI.Apply(prim)
+                    rigid_api.CreateRigidBodyEnabledAttr(True).Set(True)
+                    rigid_api.CreateKinematicEnabledAttr(bool(enabled)).Set(bool(enabled))
                 except Exception:
                     continue
+
+            if not enabled:
+                self._clear_cup_velocity(env, cup)
+
+    def _clear_cup_velocity(self, env: ManagerBasedRLEnv, cup) -> None:
+        """Clear scripted-phase residual velocity before PhysX takes over."""
+        write_velocity = getattr(cup, "write_root_velocity_to_sim", None)
+        if not callable(write_velocity):
+            return
+        try:
+            zero_velocity = torch.zeros(env.num_envs, 6, device=env.device, dtype=torch.float32)
+            write_velocity(zero_velocity)
+        except Exception:
+            return
 
     def _set_cup_pose(
         self, env: ManagerBasedRLEnv, cup_index: int, pos: tuple[float, ...]
