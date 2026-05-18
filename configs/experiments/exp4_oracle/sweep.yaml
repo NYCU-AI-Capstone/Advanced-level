@@ -1,0 +1,5 @@
+experiment_name: exp4_oracle
+description: "Oracle upper bound: ground truth ball position as observation."
+
+sweep:
+  policy.type: [oracle]

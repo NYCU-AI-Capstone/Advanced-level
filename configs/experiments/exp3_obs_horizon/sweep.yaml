@@ -1,0 +1,5 @@
+experiment_name: exp3_obs_horizon
+description: "Fixed difficulty. Vary policy observation horizon."
+
+sweep:
+  policy.observation_horizon: [2, 8, 16, 32]

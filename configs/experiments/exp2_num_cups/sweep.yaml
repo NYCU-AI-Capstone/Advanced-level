@@ -1,0 +1,5 @@
+experiment_name: exp2_num_cups
+description: "Fixed 2 shuffles, medium speed. Vary number of cups."
+
+sweep:
+  task.num_cups: [3, 4, 5]

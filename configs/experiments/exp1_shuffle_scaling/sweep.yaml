@@ -1,0 +1,5 @@
+experiment_name: exp1_shuffle_scaling
+description: "Fixed 3 cups, medium speed. Vary shuffle count to observe DSR decay."
+
+sweep:
+  task.num_shuffles: [0, 1, 2, 3, 4, 5]

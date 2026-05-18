@@ -1,0 +1,26 @@
+task:
+  num_cups: 3
+  num_shuffles: 2
+  shuffle_speed: 1.0
+  ball_position: random
+
+phase_duration:
+  reveal: 50
+  cover: 10
+  shuffle_per_swap: 30
+  act: 150
+
+evaluation:
+  num_episodes: 50
+  dsr_distance_threshold: 0.05
+  msr_lift_threshold: 0.05
+  seed: 42
+
+policy:
+  type: diffusion
+  observation_horizon: 2
+  checkpoint: null
+
+data_collection:
+  method: fsm_planner
+  num_demos: 100
