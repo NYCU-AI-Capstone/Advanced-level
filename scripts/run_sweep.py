@@ -84,6 +84,33 @@ def render_value(value: Any, context: dict[str, Any]) -> Any:
     return value
 
 
+def local_dataset_exists(path: str) -> bool:
+    dataset_path = Path(os.path.expanduser(path))
+    if not dataset_path.exists():
+        return False
+    # LeRobot datasets usually contain a meta directory; HDF5 fallback is kept
+    # for the StreamingRecorder path used by non-LeRobot recorders.
+    return (dataset_path / "meta").exists() or dataset_path.is_file() or any(dataset_path.iterdir())
+
+
+def hf_dataset_exists(repo_id: str) -> bool:
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.utils import RepositoryNotFoundError
+    except Exception:
+        print("  [datagen] huggingface_hub is unavailable; cannot check HF dataset reuse.")
+        return False
+
+    try:
+        HfApi().repo_info(repo_id=repo_id, repo_type="dataset")
+        return True
+    except RepositoryNotFoundError:
+        return False
+    except Exception as exc:
+        print(f"  [datagen] HF dataset check failed for {repo_id}: {exc}")
+        return False
+
+
 def expand_sweep(base_cfg: dict, sweep_cfg: dict) -> list[tuple[str, dict]]:
     sweep_params = sweep_cfg.get("sweep", {})
     if not sweep_params:
@@ -130,7 +157,17 @@ def build_context(cfg: dict, variant_name: str, variant_dir: str) -> dict[str, A
         prefix = training_cfg.get("policy_repo_prefix", "${HF_USER}/shellbench-policy")
         policy_repo_id = f"{os.path.expandvars(prefix)}-{repo_variant}"
 
+    local_dataset_dir = data_cfg.get("local_dataset_dir")
+    if local_dataset_dir is None:
+        local_dataset_dir = ".cache/lerobot/{dataset_repo_id}"
+
     context["dataset_repo_id"] = dataset_repo_id
+    rendered_dataset_dir = os.path.expanduser(
+        render_template(str(local_dataset_dir), {**context, "dataset_repo_id": dataset_repo_id})
+    )
+    if not os.path.isabs(rendered_dataset_dir):
+        rendered_dataset_dir = os.path.abspath(rendered_dataset_dir)
+    context["local_dataset_dir"] = rendered_dataset_dir
     context["policy_repo_id"] = policy_repo_id
     context["policy_checkpoint_path"] = policy_cfg.get(
         "checkpoint", os.path.join(context["checkpoint_dir"], "pretrained_model")
@@ -161,6 +198,21 @@ def run_datagen(cfg: dict, context: dict[str, Any], extra_args: list[str] | None
 
     python_exe = runtime_cfg.get("python", sys.executable)
     dataset_file = context["dataset_file"]
+    local_reuse = bool(data_cfg.get("local_reuse_if_exists", True))
+    hf_reuse = bool(data_cfg.get("HF_reuse_if_exists", True))
+
+    # Prefer local reuse: this avoids both Isaac datagen and a fresh Hub download.
+    # Training will add --dataset.root=<local_dataset_dir> when this path exists.
+    if local_reuse and local_dataset_exists(context["local_dataset_dir"]):
+        print(f"  [datagen] local dataset exists, reusing: {context['local_dataset_dir']}")
+        return dataset_file
+
+    # If the dataset is already on Hugging Face, skip expensive simulation and
+    # let lerobot-train resolve/cache the repo through --dataset.repo_id.
+    if hf_reuse and hf_dataset_exists(context["dataset_repo_id"]):
+        print(f"  [datagen] HF dataset exists, skipping generation: {context['dataset_repo_id']}")
+        return dataset_file
+
     cmd = [
         python_exe,
         "scripts/datagen/generate_shell_game.py",
@@ -258,6 +310,10 @@ def run_training(cfg: dict, context: dict[str, Any]) -> str | None:
         f"--wandb.enable={str(training_cfg.get('wandb_enable', True)).lower()}",
         f"--policy.repo_id={context['policy_repo_id']}",
     ]
+    # Keep dataset.repo_id for metadata, but point LeRobot at the local cache
+    # when it exists so training does not fetch the dataset again.
+    if local_dataset_exists(context["local_dataset_dir"]):
+        cmd.append(f"--dataset.root={context['local_dataset_dir']}")
 
     train_args = copy.deepcopy(policy_cfg.get("train_args", {}))
     if "observation_horizon" in policy_cfg and get_nested(train_args, "policy.n_obs_steps") is None:

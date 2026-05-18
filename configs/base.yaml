@@ -34,14 +34,16 @@ policy:
 training:
   backend: lerobot        # lerobot / command / pretrained / none
   executable: lerobot-train
-  dataset_repo_prefix: ${HF_USER}/shellbench
-  policy_repo_prefix: ${HF_USER}/shellbench-policy
+  dataset_repo_prefix: ${HF_USER}/shellbench # where to push and get the dataset
+  policy_repo_prefix: ${HF_USER}/shellbench-policy # trained policies will be pushed here
   device: cuda
   wandb_enable: true
   job_name_prefix: shellbench
   output_dir: "{checkpoint_dir}"
   checkpoint_path: "{checkpoint_dir}/pretrained_model"
-  extra_args: []
+  extra_args:
+    - "--training.num_epochs=3"
+    - "--training.batch_size=8"
   command: null
 
 data_collection:
@@ -50,3 +52,13 @@ data_collection:
   use_lerobot_recorder: true
   lerobot_dataset_fps: 30
   dataset_repo_id: null
+
+  # Dataset reuse priority:
+  # 1. If local_dataset_dir exists and local_reuse_if_exists=true, skip datagen
+  #    and train with --dataset.root=<local_dataset_dir>.
+  # 2. Otherwise, if HF_reuse_if_exists=true and dataset_repo_id exists on
+  #    Hugging Face, skip datagen and let lerobot-train load/cache the repo.
+  # 3. Otherwise, generate a new dataset for this sweep variant.
+  local_dataset_dir: ".cache/lerobot/{dataset_repo_id}"
+  local_reuse_if_exists: true
+  HF_reuse_if_exists: true
