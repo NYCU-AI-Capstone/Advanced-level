@@ -1,5 +1,6 @@
 experiment_name: exp4_oracle
-description: "Oracle upper bound: ground truth ball position as observation."
+description: "Oracle upper bound: use the scripted ground-truth picker during evaluation."
 
 sweep:
-  policy.type: [oracle]
+  policy.backend: [oracle]
+  training.backend: [none]

@@ -44,6 +44,10 @@ parser.add_argument("--num_cups", type=int, default=3)
 parser.add_argument("--num_shuffles", type=int, default=2)
 parser.add_argument("--shuffle_speed", type=float, default=1.0)
 parser.add_argument("--ball_position", type=str, default="random")
+parser.add_argument("--reveal_frames", type=int, default=50)
+parser.add_argument("--cover_frames", type=int, default=10)
+parser.add_argument("--shuffle_per_swap_frames", type=int, default=30)
+parser.add_argument("--act_frames", type=int, default=150)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -100,6 +104,10 @@ def auto_terminate(env: ManagerBasedRLEnv, success: bool):
 
 def main():
     task_name = args_cli.task
+    if args_cli.num_envs != 1:
+        raise ValueError("ShellBench v1 only supports --num_envs 1; PhaseManager state is single-env.")
+    if args_cli.num_cups < 3 or args_cli.num_cups > 5:
+        raise ValueError("ShellBench supports --num_cups in [3, 5].")
 
     output_dir = os.path.dirname(args_cli.dataset_file)
     output_file_name = os.path.splitext(os.path.basename(args_cli.dataset_file))[0]
@@ -117,6 +125,10 @@ def main():
     env_cfg.shuffle_speed = args_cli.shuffle_speed
     env_cfg.ball_position = args_cli.ball_position
     env_cfg.shell_game_seed = args_cli.seed
+    env_cfg.reveal_frames = args_cli.reveal_frames
+    env_cfg.cover_frames = args_cli.cover_frames
+    env_cfg.shuffle_per_swap_frames = args_cli.shuffle_per_swap_frames
+    env_cfg.act_frames = args_cli.act_frames
 
     # Disable time_out during data gen (FSM controls episode end)
     if hasattr(env_cfg.terminations, "time_out"):
@@ -247,6 +259,7 @@ def main():
                         sm.pre_step(env)
                         actions = sm.get_action(env)
                         env.step(actions)
+                        phase_manager.update_selection(env)
                         sm.advance()
                     else:
                         # Phase 1-3: hold position, env records observations

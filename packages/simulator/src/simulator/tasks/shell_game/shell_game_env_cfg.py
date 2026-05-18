@@ -17,6 +17,7 @@ from leisaac.utils.general_assets import parse_usd_and_create_subassets
 from simulator import ASSETS_ROOT
 from simulator.assets.scenes.kitchen import KITCHEN_CFG, KITCHEN_USD_PATH
 
+from simulator.tasks.template import mdp
 from simulator.tasks.template.single_arm_franka_cfg import (
     SingleArmFrankaObservationsCfg,
     SingleArmFrankaTaskEnvCfg,
@@ -126,7 +127,7 @@ class ShellGameSceneCfg(SingleArmFrankaTaskSceneCfg):
 class TerminationsCfg(SingleArmFrankaTerminationsCfg):
     """Termination: time_out + any_cup_lifted (no success term)."""
 
-    time_out = DoneTerm(func="isaaclab.envs.mdp:time_out", time_out=True)
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)
 
     any_cup_lifted = DoneTerm(
         func=any_cup_z_above_threshold,

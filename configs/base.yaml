@@ -1,3 +1,8 @@
+runtime:
+  python: python
+  sim_device: cuda
+  enable_cameras: true
+
 task:
   num_cups: 3
   num_shuffles: 2
@@ -17,10 +22,31 @@ evaluation:
   seed: 42
 
 policy:
+  backend: lerobot        # lerobot / oracle / pretrained
   type: diffusion
-  observation_horizon: 2
+  observation_horizon: 2  # mapped to --policy.n_obs_steps for lerobot-train
+  action_horizon: 16
   checkpoint: null
+  repo_id: null
+  train_args: {}
+  eval_args: []
+
+training:
+  backend: lerobot        # lerobot / command / pretrained / none
+  executable: lerobot-train
+  dataset_repo_prefix: ${HF_USER}/shellbench
+  policy_repo_prefix: ${HF_USER}/shellbench-policy
+  device: cuda
+  wandb_enable: true
+  job_name_prefix: shellbench
+  output_dir: "{checkpoint_dir}"
+  checkpoint_path: "{checkpoint_dir}/pretrained_model"
+  extra_args: []
+  command: null
 
 data_collection:
   method: fsm_planner
   num_demos: 100
+  use_lerobot_recorder: true
+  lerobot_dataset_fps: 30
+  dataset_repo_id: null

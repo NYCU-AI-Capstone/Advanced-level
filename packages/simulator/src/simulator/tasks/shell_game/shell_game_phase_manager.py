@@ -71,6 +71,7 @@ class ShellGamePhaseManager:
         self._cup_init_positions: list[list[float]] = []
         self._selected_cup_index: int | None = None
         self._ball_hidden: bool = False
+        self._ball_revealed: bool = False
 
     # ------------------------------------------------------------------
     # Public interface
@@ -97,6 +98,10 @@ class ShellGamePhaseManager:
         self._current_shuffle_idx = 0
         self._selected_cup_index = None
         self._ball_hidden = False
+        self._ball_revealed = False
+
+        # Phase 1-3 are scripted; keep cups kinematic while the manager moves them.
+        self._set_cups_kinematic(env, True)
 
         # Decide ball position
         if self._ball_position_cfg == "random":
@@ -188,8 +193,10 @@ class ShellGamePhaseManager:
         self._phase = Phase.COVER
         self._step_in_phase = 0
         self._ball_hidden = True
-        # Hide ball by moving it below the table
-        self._set_ball_pose(env, (0.0, 0.0, -5.0))
+        self._ball_revealed = False
+        # Keep the ball under the physical hiding cup. It should be visually
+        # occluded by the cup, and will become visible when the correct cup lifts.
+        self._sync_ball_to_hiding_cup(env)
 
     def _transition_to_shuffle(self, env: ManagerBasedRLEnv) -> None:
         """Begin shuffle phase."""
@@ -197,12 +204,15 @@ class ShellGamePhaseManager:
         self._step_in_phase = 0
         self._current_shuffle_idx = 0
         if self._num_shuffles == 0:
-            self._transition_to_act()
+            self._transition_to_act(env)
 
-    def _transition_to_act(self) -> None:
+    def _transition_to_act(self, env: ManagerBasedRLEnv | None = None) -> None:
         """Hand control to policy."""
         self._phase = Phase.ACT
         self._step_in_phase = 0
+        if env is not None:
+            # In Act, cups must be dynamic so the gripper can physically lift them.
+            self._set_cups_kinematic(env, False)
 
     # ------------------------------------------------------------------
     # Shuffle logic
@@ -211,7 +221,7 @@ class ShellGamePhaseManager:
     def _step_shuffle(self, env: ManagerBasedRLEnv) -> None:
         """Animate one step of the current shuffle swap."""
         if self._current_shuffle_idx >= len(self._shuffle_sequence):
-            self._transition_to_act()
+            self._transition_to_act(env)
             return
 
         i, j = self._shuffle_sequence[self._current_shuffle_idx]
@@ -242,6 +252,8 @@ class ShellGamePhaseManager:
         self._cup_positions[j] = new_j
         self._set_cup_pose(env, i, tuple(new_i))
         self._set_cup_pose(env, j, tuple(new_j))
+        if self._ball_cup_idx in (i, j):
+            self._sync_ball_to_hiding_cup(env)
 
         self._step_in_phase += 1
 
@@ -258,17 +270,15 @@ class ShellGamePhaseManager:
                 list(pos_i_start),
             )
 
-            # Track ball: if ball was under cup i or j, it follows
-            if self._ball_cup_idx == i:
-                self._ball_cup_idx = j
-            elif self._ball_cup_idx == j:
-                self._ball_cup_idx = i
+            # _ball_cup_idx is the physical cup id hiding the ball. The cup's
+            # position changed during the swap, but the hiding cup id does not.
+            self._sync_ball_to_hiding_cup(env)
 
             self._current_shuffle_idx += 1
             self._step_in_phase = 0
 
             if self._current_shuffle_idx >= len(self._shuffle_sequence):
-                self._transition_to_act()
+                self._transition_to_act(env)
 
     # ------------------------------------------------------------------
     # Selection detection
@@ -285,6 +295,8 @@ class ShellGamePhaseManager:
             cup_z = (cup.data.root_pos_w - env.scene.env_origins)[0, 2].item()
             if cup_z > CUP_Z + lift_threshold:
                 self._selected_cup_index = i
+                if i == self._ball_cup_idx:
+                    self._reveal_ball(env)
                 return
 
     # ------------------------------------------------------------------
@@ -295,6 +307,47 @@ class ShellGamePhaseManager:
         """Place all active cups at their computed positions."""
         for i in range(self._num_cups):
             self._set_cup_pose(env, i, tuple(self._cup_positions[i]))
+
+    def _sync_ball_to_hiding_cup(self, env: ManagerBasedRLEnv) -> None:
+        """Keep the hidden ball at the table position of the physical hiding cup."""
+        pos = self._cup_positions[self._ball_cup_idx]
+        self._set_ball_pose(env, (pos[0], pos[1], BALL_Z))
+
+    def _reveal_ball(self, env: ManagerBasedRLEnv) -> None:
+        """Reveal the ball after the correct cup has been lifted."""
+        if self._ball_revealed:
+            return
+        self._sync_ball_to_hiding_cup(env)
+        self._ball_revealed = True
+
+    def _set_cups_kinematic(self, env: ManagerBasedRLEnv, enabled: bool) -> None:
+        """Toggle cup kinematic mode at the USD/PhysX layer when available."""
+        try:
+            from pxr import PhysxSchema, UsdPhysics
+        except Exception:
+            return
+
+        for i in range(self._num_cups):
+            cup = env.scene[f"cup_{i}"]
+            roots = list(getattr(cup, "prims", []))
+            prims = []
+            for root in roots:
+                prims.append(root)
+                try:
+                    prims.extend(list(root.GetAllChildren()))
+                except Exception:
+                    pass
+            for prim in prims:
+                try:
+                    if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                        continue
+                    api = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+                    attr = api.GetKinematicEnabledAttr()
+                    if not attr:
+                        attr = api.CreateKinematicEnabledAttr()
+                    attr.Set(bool(enabled))
+                except Exception:
+                    continue
 
     def _set_cup_pose(
         self, env: ManagerBasedRLEnv, cup_index: int, pos: tuple[float, ...]
