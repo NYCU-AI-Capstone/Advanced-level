@@ -101,6 +101,7 @@ class ShellGamePhaseManager:
         self._ball_revealed = False
 
         # Phase 1-3 are scripted; keep cups kinematic while the manager moves them.
+        # Ball is always kinematic (visual marker only, no collision).
         self._set_cups_kinematic(env, True)
 
         # Decide ball position
@@ -152,6 +153,8 @@ class ShellGamePhaseManager:
         elif self._phase == Phase.ACT:
             self._step_in_phase += 1
             self._update_selection(env)
+            if not self._ball_revealed:
+                self._track_ball_to_hiding_cup(env)
             return True
 
         return self._phase == Phase.ACT
@@ -211,7 +214,10 @@ class ShellGamePhaseManager:
         self._phase = Phase.ACT
         self._step_in_phase = 0
         if env is not None:
-            # In Act, cups must be dynamic so the gripper can physically lift them.
+            # Final sync: ensure ball is centered under the hiding cup.
+            self._sync_ball_to_hiding_cup(env)
+            # Cups become dynamic so the gripper can physically lift them.
+            # Ball stays kinematic (visual marker).
             self._set_cups_kinematic(env, False)
 
     # ------------------------------------------------------------------
@@ -295,8 +301,7 @@ class ShellGamePhaseManager:
             cup_z = (cup.data.root_pos_w - env.scene.env_origins)[0, 2].item()
             if cup_z > CUP_Z + lift_threshold:
                 self._selected_cup_index = i
-                if i == self._ball_cup_idx:
-                    self._reveal_ball(env)
+                self._ball_revealed = True
                 return
 
     # ------------------------------------------------------------------
@@ -313,12 +318,17 @@ class ShellGamePhaseManager:
         pos = self._cup_positions[self._ball_cup_idx]
         self._set_ball_pose(env, (pos[0], pos[1], BALL_Z))
 
+    def _track_ball_to_hiding_cup(self, env: ManagerBasedRLEnv) -> None:
+        """During ACT, follow the hiding cup's x,y but stay at table height."""
+        cup = env.scene[f"cup_{self._ball_cup_idx}"]
+        cup_pos = (cup.data.root_pos_w - env.scene.env_origins)[0]
+        self._set_ball_pose(env, (cup_pos[0].item(), cup_pos[1].item(), BALL_Z))
+
     def _reveal_ball(self, env: ManagerBasedRLEnv) -> None:
-        """Reveal the ball after the correct cup has been lifted."""
-        if self._ball_revealed:
-            return
-        self._sync_ball_to_hiding_cup(env)
+        """Drop the ball to the table at the hiding cup's original position."""
         self._ball_revealed = True
+        pos = self._cup_positions[self._ball_cup_idx]
+        self._set_ball_pose(env, (pos[0], pos[1], BALL_Z))
 
     def _set_cups_kinematic(self, env: ManagerBasedRLEnv, enabled: bool) -> None:
         try:
@@ -386,6 +396,30 @@ class ShellGamePhaseManager:
                 torch.zeros(env.num_envs, 6, device=env.device)
             )
 
+    def _set_ball_kinematic(self, env: ManagerBasedRLEnv, enabled: bool) -> None:
+        try:
+            import re
+            import omni.usd
+            from pxr import UsdPhysics
+        except Exception:
+            return
+
+        stage = omni.usd.get_context().get_stage()
+        ball = env.scene["ball"]
+        cfg_path = getattr(getattr(ball, "cfg", None), "prim_path", "")
+        pattern = re.compile("^" + cfg_path + "$")
+
+        for prim in stage.Traverse():
+            if not pattern.match(str(prim.GetPath())):
+                continue
+            if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                continue
+            api = UsdPhysics.RigidBodyAPI.Apply(prim)
+            attr = api.GetKinematicEnabledAttr()
+            if not attr:
+                attr = api.CreateKinematicEnabledAttr()
+            attr.Set(bool(enabled))
+
     def _set_ball_pose(
         self, env: ManagerBasedRLEnv, pos: tuple[float, ...]
     ) -> None:
@@ -396,3 +430,7 @@ class ShellGamePhaseManager:
             dtype=torch.float32,
         ).repeat(env.num_envs, 1)
         ball.write_root_pose_to_sim(pose)
+        if hasattr(ball, "write_root_velocity_to_sim"):
+            ball.write_root_velocity_to_sim(
+                torch.zeros(env.num_envs, 6, device=env.device)
+            )

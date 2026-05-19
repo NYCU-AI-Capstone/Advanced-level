@@ -245,6 +245,7 @@ class ShellGameStateMachine(StateMachineBase):
 
     def _phase_grasp(self, cup_pos_w, num_envs, device):
         target_pos_w = cup_pos_w.clone()
+        target_pos_w[:, 2] += _GRASP_Z_OFFSET
         return target_pos_w, _constant_gripper(num_envs, device, _GRIPPER_CLOSE)
 
     def _phase_lift(self, cup_pos_w, num_envs, device):

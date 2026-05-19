@@ -33,12 +33,13 @@ MAX_CUPS = 5
 
 # Cup arrangement: cups placed along x-axis on the table
 CUP_BASE_Y = -0.20
-CUP_Z = 0.12
+CUP_Z = 0.14
 CUP_SPACING = 0.12
 
-# Ball radius
-BALL_RADIUS = 0.015
-BALL_Z = 0.05
+# Ball geometry
+BALL_RADIUS = 0.008
+# Ball center inside the cup — cup origin is near the rim, so offset downward.
+BALL_Z = 0.05067
 
 # Position to hide unused cups / ball (far below scene)
 HIDDEN_POS = (0.0, 0.0, -10.0)
@@ -113,7 +114,7 @@ class ShellGameSceneCfg(SingleArmFrankaTaskSceneCfg):
             ),
             mass_props=MassPropertiesCfg(mass=0.0001),
             rigid_props=RigidBodyPropertiesCfg(
-                kinematic_enabled=False,
+                kinematic_enabled=True,
                 disable_gravity=True,
             ),
         ),
