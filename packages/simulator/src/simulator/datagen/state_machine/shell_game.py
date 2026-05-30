@@ -49,7 +49,13 @@ _MAX_ROT_DELTA = 0.08
 _IK_DLS_LAMBDA = 0.01
 
 _HOVER_Z_OFFSET = 0.15
-_GRASP_Z_OFFSET = 0.08
+# Cup is INVERTED and scaled 0.7 (origin at the mouth/lowest point, z~0.041; closed top
+# now at ~0.114). Offset is measured up from the cup origin and given to panda_hand
+# (fingertips sit ~0.06 below it). At 0.02 the gripper drove down past the short cup and
+# hit it; 0.12 grasped all three cups but still grazed the top on descent. 0.15 ->
+# fingertips ~0.13, near the closed top, so the gripper clears the cup on the way down
+# and grips the very top of the body.
+_GRASP_Z_OFFSET = 0.15
 _LIFT_Z_OFFSET = 0.20
 _GRIPPER_DOWN_ROLL_W = math.pi
 _GRIPPER_DOWN_PITCH_W = 0.0
