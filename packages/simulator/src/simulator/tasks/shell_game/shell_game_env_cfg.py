@@ -50,11 +50,11 @@ CUP_SPACING = 0.12
 CUP_SCALE = 0.7
 
 # Ball geometry
-BALL_RADIUS = 0.008
+BALL_RADIUS = 0.013
 # The inverted cup's rim settles on the table at z≈0.041 (measured in-sim), so the
-# table surface is ~0.041. Ball center = table + radius = 0.041 + 0.008 ≈ 0.049 so the
+# table surface is ~0.041. Ball center = table + radius = 0.041 + 0.013 ≈ 0.054 so the
 # ball rests ON the table and is enclosed by the inverted cup until it is lifted.
-BALL_Z = 0.049
+BALL_Z = 0.054
 
 # Position to hide unused cups / ball (far below scene)
 HIDDEN_POS = (0.0, 0.0, -10.0)
@@ -138,7 +138,7 @@ class ShellGameSceneCfg(SingleArmFrankaTaskSceneCfg):
         spawn=sim_utils.SphereCfg(
             radius=BALL_RADIUS,
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(1.0, 0.5, 0.0),
+                diffuse_color=(1.0, 1.0, 1.0),
             ),
             mass_props=MassPropertiesCfg(mass=0.0001),
             rigid_props=RigidBodyPropertiesCfg(
