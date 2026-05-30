@@ -89,6 +89,10 @@ class RateLimiter:
 
 def auto_terminate(env: ManagerBasedRLEnv, success: bool):
     if hasattr(env, "termination_manager"):
+        # The "success" term is only registered when recording (see main). Without
+        # --record there is nothing to drive, so skip instead of raising on a missing term.
+        if "success" not in env.termination_manager.active_terms:
+            return
         if success:
             env.termination_manager.set_term_cfg(
                 "success",
