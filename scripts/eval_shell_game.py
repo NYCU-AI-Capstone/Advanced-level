@@ -31,7 +31,8 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="ShellBench evaluation.")
 parser.add_argument("--task", type=str, default="HCIS-ShellGame-SingleArm-v0")
-parser.add_argument("--device", type=str, default="cuda:0")
+# Note: --device is added by AppLauncher.add_app_launcher_args() below; do not add it
+# here or argparse raises a conflicting-field error.
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--step_hz", type=int, default=60)
 parser.add_argument("--episode_length_s", type=float, default=60.0)
@@ -290,8 +291,16 @@ def main():
     env_cfg.shuffle_per_swap_frames = args_cli.shuffle_per_swap_frames
     env_cfg.act_frames = args_cli.act_frames
 
-    # Keep time_out as safety net, disable any_cup_lifted (evaluator handles it)
     env_cfg.recorders = None
+
+    # Disable any_cup_lifted: it fires the instant a cup crosses the lift threshold,
+    # and env.step() then auto-resets the scene, snapping cups back to their initial
+    # pose BEFORE update_selection() reads them -> selected_cup_index never records
+    # the lifted cup -> false MISS even though the grasp succeeded. The evaluator
+    # detects the lift itself via update_selection. Keep time_out as the safety net
+    # (it only fires when nothing was lifted, where MISS is the correct outcome).
+    if hasattr(env_cfg.terminations, "any_cup_lifted"):
+        env_cfg.terminations.any_cup_lifted = None
 
     env: ManagerBasedRLEnv = gym.make(task_name, cfg=env_cfg).unwrapped
 
@@ -333,11 +342,16 @@ def main():
           f"{args_cli.num_cups} cups, {args_cli.num_shuffles} shuffles")
 
     for ep in range(args_cli.num_episodes):
-        obs_dict, _ = env.reset()
-        if policy is not None:
-            policy.reset()
-        sm_helper.reset()
-        phase_manager.reset(env)
+        # phase_manager.reset writes cup/ball poses via write_root_pose_to_sim. Those
+        # sim tensors are inference tensors, so the reset must run inside inference_mode
+        # too (matching generate_shell_game.py); otherwise PyTorch raises on the
+        # in-place pose update outside InferenceMode.
+        with torch.inference_mode():
+            obs_dict, _ = env.reset()
+            if policy is not None:
+                policy.reset()
+            sm_helper.reset()
+            phase_manager.reset(env)
 
         episode_done = False
         while simulation_app.is_running() and not episode_done:
