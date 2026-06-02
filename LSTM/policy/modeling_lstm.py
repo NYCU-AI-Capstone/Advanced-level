@@ -97,6 +97,13 @@ class LSTMPolicy(PreTrainedPolicy):
         # 的 _clear_cached_actions() 會掃到的 action_queue 之類欄位）
         self._lstm_state: tuple[Tensor, Tensor] | None = None
 
+        # 推論 stride：每 N 次 select_action 呼叫才真正更新 hidden state、算新動作，
+        # 其餘次回傳上一次的動作。讓 eval 端不需要任何修改——它照常每幀呼叫 policy，
+        # 但 policy 自己按 obs_stride 節奏處理，跟訓練時的時間動態一致。
+        self._stride = config.obs_stride
+        self._stride_counter = 0
+        self._cached_action: Tensor | None = None
+
         self.reset()
 
     # ------------------------------------------------------------------ helpers
@@ -159,8 +166,10 @@ class LSTMPolicy(PreTrainedPolicy):
         save_file(state, str(Path(save_directory) / SAFETENSORS_SINGLE_FILE), metadata={"format": "pt"})
 
     def reset(self) -> None:
-        """每個 episode 開頭呼叫，清空 LSTM 記憶。"""
+        """每個 episode 開頭呼叫，清空 LSTM 記憶與 stride 狀態。"""
         self._lstm_state = None
+        self._stride_counter = 0
+        self._cached_action = None
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict | None]:
         """訓練：對整段序列做 BPTT，回傳 masked MSE loss。"""
@@ -184,8 +193,19 @@ class LSTMPolicy(PreTrainedPolicy):
         return self.select_action(batch, **kwargs).unsqueeze(1)
 
     def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
-        """推論：餵單一幀，攜帶並更新 hidden state，回傳一個動作 [B, action_dim]。"""
-        feat = self._encode_observation(batch)             # [B, 1, input]
-        out, self._lstm_state = self.lstm(feat, self._lstm_state)  # 跨呼叫攜帶記憶
-        action = self.action_head(out[:, -1])              # [B, action_dim]
-        return action
+        """推論：餵單一幀，依 obs_stride 決定是否更新 hidden state。
+
+        stride=1（預設）：每次都處理。
+        stride=N>1：每 N 次呼叫才真正 encode+LSTM forward（更新記憶、算新動作），
+        其餘次直接回傳上一次的動作。這讓 eval 端不用改——照常每幀呼叫 policy，
+        但 policy 按 stride 節奏處理，跟訓練的 observation_delta_indices 一致。
+        """
+        should_process = (self._stride_counter % self._stride == 0)
+        self._stride_counter += 1
+
+        if should_process or self._cached_action is None:
+            feat = self._encode_observation(batch)             # [B, 1, input]
+            out, self._lstm_state = self.lstm(feat, self._lstm_state)
+            self._cached_action = self.action_head(out[:, -1]) # [B, action_dim]
+
+        return self._cached_action
