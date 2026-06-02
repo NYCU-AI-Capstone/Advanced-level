@@ -54,6 +54,13 @@ parser.add_argument("--reveal_frames", type=int, default=50)
 parser.add_argument("--cover_frames", type=int, default=10)
 parser.add_argument("--shuffle_per_swap_frames", type=int, default=30)
 parser.add_argument("--act_frames", type=int, default=150)
+parser.add_argument(
+    "--max_act_steps",
+    type=int,
+    default=600,
+    help="Act 階段最多執行幾步 policy 動作；超過仍未掀杯則視為 MISS 並結束該集，"
+    "避免沒夾起來時空跑到 episode time_out（成功抓取約 360 步內完成，不受影響）。",
+)
 
 # Output
 parser.add_argument("--output_json", type=str, default="./results/shell_game_metrics.json")
@@ -354,6 +361,7 @@ def main():
             phase_manager.reset(env)
 
         episode_done = False
+        act_steps = 0
         while simulation_app.is_running() and not episode_done:
             with torch.inference_mode():
                 is_act = phase_manager.step(env)
@@ -374,8 +382,14 @@ def main():
                         phase_manager.update_selection(env)
                         if args_cli.policy_backend == "oracle":
                             sm_helper.advance()
+                        act_steps += 1
 
                         if terminated[0] or timed_out[0]:
+                            episode_done = True
+                            break
+                        # Cap the Act phase so a non-grasping policy ends quickly as MISS
+                        # instead of running until the env time_out.
+                        if act_steps >= args_cli.max_act_steps:
                             episode_done = True
                             break
                         if rate_limiter:
