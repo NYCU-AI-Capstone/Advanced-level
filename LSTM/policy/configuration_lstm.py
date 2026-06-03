@@ -38,7 +38,7 @@ class LSTMConfig(PreTrainedConfig):
     # --- 影像 encoder ----------------------------------------------------------
     vision_backbone: str = "resnet18"
     pretrained_backbone_weights: str | None = "IMAGENET1K_V1"  # None = 不載 pretrained
-    image_size: int = 96  # 影像 resize 邊長（省 BPTT 記憶體；洗牌粗略空間資訊足夠）
+    image_size: int = 160  # 影像 resize 邊長（96 太小看不到球；160 在 4090 上可行）
 
     # --- LSTM ------------------------------------------------------------------
     hidden_size: int = 512
