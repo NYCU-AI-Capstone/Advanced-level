@@ -33,40 +33,67 @@ MAX_CUPS = 5
 
 # Cup arrangement: cups placed along x-axis on the table
 CUP_BASE_Y = -0.20
-CUP_Z = 0.12
+# Cup origin is at the BOTTOM of the glass; glass is ~0.104 m tall (measured in-sim).
+# Cups spawn inverted (mouth-down, see _make_cup_cfg / _set_cup_pose). With convex-
+# decomposition collision the cup is hollow; its inverted rim rests on the table and
+# the origin settles at z≈0.041 (measured in-sim from the dynamic cup). Spawn at that
+# settled height so the cup does not drop or hover when it switches to dynamic.
+CUP_Z = 0.041
 CUP_SPACING = 0.12
 
-# Ball radius
-BALL_RADIUS = 0.015
-BALL_Z = 0.05
+# Uniform scale on the glassware cup. At full size the cup is ~0.072 m across at grasp
+# height vs the Franka gripper's ~0.08 m max opening — only ~4 mm/side clearance, so any
+# approach misalignment on the off-center cups makes a finger clip the cup and shove it
+# before the gripper is seated. Shrinking restores descent clearance. Uniform scale keeps
+# the shape; the rim stays at the origin so the cup still rests on the table at CUP_Z and
+# the ball at BALL_Z stays covered.
+CUP_SCALE = 0.7
+
+# Ball geometry
+BALL_RADIUS = 0.013
+# The inverted cup's rim settles on the table at z≈0.041 (measured in-sim), so the
+# table surface is ~0.041. Ball center = table + radius = 0.041 + 0.013 ≈ 0.054 so the
+# ball rests ON the table and is enclosed by the inverted cup until it is lifted.
+BALL_Z = 0.054
 
 # Position to hide unused cups / ball (far below scene)
 HIDDEN_POS = (0.0, 0.0, -10.0)
 
 
 def _cup_x_positions(num_cups: int) -> list[float]:
-    """Compute x positions for cups centered around x=0.5."""
-    center_x = 0.50
+    """Compute x positions for cups, centered on the robot base (x=0.35).
+
+    The robot base is at x=0.35 (see robot.init_state.pos). Centering the row here
+    keeps all cups within the arm's reach; a center at 0.50 left the cups skewed to
+    one side so the off-center cups were hard to grasp.
+    """
+    center_x = 0.35
     total_width = (num_cups - 1) * CUP_SPACING
     start_x = center_x - total_width / 2.0
     return [start_x + i * CUP_SPACING for i in range(num_cups)]
 
 
-def _make_cup_cfg(index: int, name_prefix: str, *, kinematic_enabled: bool) -> RigidObjectCfg:
+def _make_cup_cfg(index: int) -> RigidObjectCfg:
     return RigidObjectCfg(
-        prim_path=f"{{ENV_REGEX_NS}}/Scene/{name_prefix}_{index}",
+        prim_path=f"{{ENV_REGEX_NS}}/Scene/cup_{index}",
         spawn=sim_utils.UsdFileCfg(
             usd_path=CUP_USD_PATH,
-            # PinkCup's MassAPI lives below the asset root, so Isaac Lab's
-            # generic spawn-time mass patch misses it. ShellGamePhaseManager
-            # authors the explicit cup mass on the actual rigid-body prims.
+            scale=(CUP_SCALE, CUP_SCALE, CUP_SCALE),
+            # Collision is baked in the USD as convexHull (solid cone) so the gripper has
+            # a firm body to grasp; the visual mesh is still a hollow glass, so the ball
+            # hides inside the inverted cup. Real mass so contact forces don't fling it.
+            mass_props=MassPropertiesCfg(mass=0.05),
             rigid_props=RigidBodyPropertiesCfg(
-                kinematic_enabled=kinematic_enabled,
+                kinematic_enabled=False,
+            ),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                collision_enabled=True,
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=HIDDEN_POS,
-            rot=(1.0, 0.0, 0.0, 0.0),
+            # 180° about X -> cup spawns inverted (mouth-down) to cover the ball.
+            rot=(0.0, 1.0, 0.0, 0.0),
         ),
     )
 
@@ -100,32 +127,23 @@ class ShellGameSceneCfg(SingleArmFrankaTaskSceneCfg):
 
     scene: AssetBaseCfg = KITCHEN_CFG.replace(prim_path="{ENV_REGEX_NS}/Scene")
 
-    # Act cups are dynamic from spawn time. They stay hidden during scripted
-    # phases, then get pose-synced into view for robot interaction.
-    cup_0: RigidObjectCfg = _make_cup_cfg(0, "cup", kinematic_enabled=False)
-    cup_1: RigidObjectCfg = _make_cup_cfg(1, "cup", kinematic_enabled=False)
-    cup_2: RigidObjectCfg = _make_cup_cfg(2, "cup", kinematic_enabled=False)
-    cup_3: RigidObjectCfg = _make_cup_cfg(3, "cup", kinematic_enabled=False)
-    cup_4: RigidObjectCfg = _make_cup_cfg(4, "cup", kinematic_enabled=False)
-
-    # Script cups are kinematic visual/physics proxies for Reveal/Cover/Shuffle.
-    # They are hidden before Act so they never overlap the dynamic cups in sim.
-    script_cup_0: RigidObjectCfg = _make_cup_cfg(0, "script_cup", kinematic_enabled=True)
-    script_cup_1: RigidObjectCfg = _make_cup_cfg(1, "script_cup", kinematic_enabled=True)
-    script_cup_2: RigidObjectCfg = _make_cup_cfg(2, "script_cup", kinematic_enabled=True)
-    script_cup_3: RigidObjectCfg = _make_cup_cfg(3, "script_cup", kinematic_enabled=True)
-    script_cup_4: RigidObjectCfg = _make_cup_cfg(4, "script_cup", kinematic_enabled=True)
+    cup_0: RigidObjectCfg = _make_cup_cfg(0)
+    cup_1: RigidObjectCfg = _make_cup_cfg(1)
+    cup_2: RigidObjectCfg = _make_cup_cfg(2)
+    cup_3: RigidObjectCfg = _make_cup_cfg(3)
+    cup_4: RigidObjectCfg = _make_cup_cfg(4)
 
     ball: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Scene/ball",
         spawn=sim_utils.SphereCfg(
             radius=BALL_RADIUS,
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(1.0, 0.5, 0.0),
+                diffuse_color=(1.0, 1.0, 1.0),
             ),
-            mass_props=MassPropertiesCfg(mass=0.01),
+            mass_props=MassPropertiesCfg(mass=0.0001),
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
+                disable_gravity=True,
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(

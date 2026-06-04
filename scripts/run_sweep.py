@@ -335,7 +335,10 @@ def run_training(cfg: dict, context: dict[str, Any]) -> str | None:
         command = render_template(command_template, local_context)
         print("  [train:command]")
         run_command(command, shell=True)
-        return training_cfg.get("checkpoint_path", os.path.join(output_dir, "pretrained_model"))
+        checkpoint_path = training_cfg.get(
+            "checkpoint_path", os.path.join(output_dir, "pretrained_model")
+        )
+        return render_template(str(checkpoint_path), local_context)
 
     if backend != "lerobot":
         raise ValueError(f"Unsupported training backend: {backend}")
@@ -365,7 +368,10 @@ def run_training(cfg: dict, context: dict[str, Any]) -> str | None:
 
     print("  [train:lerobot]")
     run_command(cmd)
-    return training_cfg.get("checkpoint_path", os.path.join(output_dir, "pretrained_model"))
+    checkpoint_path = training_cfg.get(
+        "checkpoint_path", os.path.join(output_dir, "pretrained_model")
+    )
+    return render_template(str(checkpoint_path), context)
 
 
 def run_eval(

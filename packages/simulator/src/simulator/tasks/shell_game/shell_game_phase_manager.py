@@ -27,8 +27,6 @@ from .shell_game_env_cfg import (
     _cup_x_positions,
 )
 
-_CUP_MASS_KG = 0.1
-
 
 class Phase(IntEnum):
     REVEAL = 0
@@ -74,6 +72,9 @@ class ShellGamePhaseManager:
         self._selected_cup_index: int | None = None
         self._ball_hidden: bool = False
         self._ball_revealed: bool = False
+        # Ball position during Reveal (beside the hiding cup). Cover animates the ball
+        # from here to under the cup; stored so _step_cover can interpolate.
+        self._ball_reveal_pos: tuple[float, float, float] | None = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -102,13 +103,9 @@ class ShellGamePhaseManager:
         self._ball_hidden = False
         self._ball_revealed = False
 
-        # Phase 1-3 use separate kinematic script cups. Keep the dynamic
-        # Act cups hidden so they cannot perturb the scripted shuffle.
-        self._apply_cup_mass_properties(env)
-        self._set_script_cups_kinematic(env, True)
-        self._set_cup_family_visible(env, "script_cup", True)
-        self._set_cup_family_visible(env, "cup", False)
-        self._hide_dynamic_cups(env)
+        # Phase 1-3 are scripted; keep cups kinematic while the manager moves them.
+        # Ball is always kinematic (visual marker only, no collision).
+        self._set_cups_kinematic(env, True)
 
         # Decide ball position
         if self._ball_position_cfg == "random":
@@ -130,17 +127,17 @@ class ShellGamePhaseManager:
         self._cup_positions = [[x, CUP_BASE_Y, CUP_Z] for x in x_positions]
         self._cup_init_positions = [pos[:] for pos in self._cup_positions]
 
-        # Place active scripted cups
-        self._place_script_cups(env)
+        # Place active cups
+        self._place_cups(env)
 
         # Place ball next to the target cup (visible during Reveal)
         ball_x = self._cup_positions[self._ball_cup_idx][0]
-        self._set_ball_pose(env, (ball_x, CUP_BASE_Y + 0.06, BALL_Z))
+        self._ball_reveal_pos = (ball_x, CUP_BASE_Y + 0.06, BALL_Z)
+        self._set_ball_pose(env, self._ball_reveal_pos)
 
-        # Hide unused scripted cups and all dynamic Act cups until handoff.
+        # Hide unused cups
         for i in range(self._num_cups, 5):
-            self._set_script_cup_pose(env, i, HIDDEN_POS)
-        self._hide_dynamic_cups(env)
+            self._set_cup_pose(env, i, HIDDEN_POS)
 
     def step(self, env: ManagerBasedRLEnv) -> bool:
         """Advance one step. Returns True when in Act phase (policy should control)."""
@@ -150,9 +147,7 @@ class ShellGamePhaseManager:
                 self._transition_to_cover(env)
 
         elif self._phase == Phase.COVER:
-            self._step_in_phase += 1
-            if self._step_in_phase >= self._cover_frames:
-                self._transition_to_shuffle(env)
+            self._step_cover(env)
 
         elif self._phase == Phase.SHUFFLE:
             self._step_shuffle(env)
@@ -160,6 +155,8 @@ class ShellGamePhaseManager:
         elif self._phase == Phase.ACT:
             self._step_in_phase += 1
             self._update_selection(env)
+            if not self._ball_revealed:
+                self._track_ball_to_hiding_cup(env)
             return True
 
         return self._phase == Phase.ACT
@@ -197,14 +194,54 @@ class ShellGamePhaseManager:
     # ------------------------------------------------------------------
 
     def _transition_to_cover(self, env: ManagerBasedRLEnv) -> None:
-        """Ball disappears under the cup."""
+        """Begin cover phase. _step_cover animates lift -> slide ball -> lower cup."""
         self._phase = Phase.COVER
         self._step_in_phase = 0
         self._ball_hidden = True
         self._ball_revealed = False
-        # Keep the ball under the physical hiding cup. It should be visually
-        # occluded by the cup, and will become visible when the correct cup lifts.
-        self._sync_ball_to_hiding_cup(env)
+
+    def _step_cover(self, env: ManagerBasedRLEnv) -> None:
+        """Cover animation over cover_frames, in three equal segments:
+          1. lift the hiding cup straight up (exposes the spot beneath it),
+          2. slide the ball from its reveal spot to under the lifted cup,
+          3. lower the cup back down to cover the ball.
+
+        Cups are kinematic during Phases 1-3, so moving them by pose here is safe.
+        Speed is set by cover_frames (default 30); raise it for an even slower anim.
+        """
+        cup_idx = self._ball_cup_idx
+        base = self._cup_init_positions[cup_idx]  # [x, CUP_BASE_Y, CUP_Z]
+        lift_height = 0.06
+        reveal = self._ball_reveal_pos or (base[0], base[1], BALL_Z)
+        under = (base[0], base[1], BALL_Z)
+
+        seg = max(self._cover_frames, 3) / 3.0
+        step = self._step_in_phase
+
+        if step < seg:
+            # Segment 1: lift the cup.
+            t = min(step / max(seg - 1, 1), 1.0)
+            self._set_cup_pose(env, cup_idx, (base[0], base[1], base[2] + lift_height * t))
+        elif step < 2 * seg:
+            # Segment 2: cup stays lifted, ball slides underneath.
+            self._set_cup_pose(env, cup_idx, (base[0], base[1], base[2] + lift_height))
+            t = min((step - seg) / max(seg - 1, 1), 1.0)
+            x = reveal[0] * (1.0 - t) + under[0] * t
+            y = reveal[1] * (1.0 - t) + under[1] * t
+            self._set_ball_pose(env, (x, y, BALL_Z))
+        else:
+            # Segment 3: ball settled under cup, lower the cup back down.
+            self._set_ball_pose(env, under)
+            t = min((step - 2 * seg) / max(seg - 1, 1), 1.0)
+            z = (base[2] + lift_height) * (1.0 - t) + base[2] * t
+            self._set_cup_pose(env, cup_idx, (base[0], base[1], z))
+
+        self._step_in_phase += 1
+        if self._step_in_phase >= self._cover_frames:
+            # Snap cup to rest and ball exactly under it, then advance.
+            self._set_cup_pose(env, cup_idx, (base[0], base[1], base[2]))
+            self._sync_ball_to_hiding_cup(env)
+            self._transition_to_shuffle(env)
 
     def _transition_to_shuffle(self, env: ManagerBasedRLEnv) -> None:
         """Begin shuffle phase."""
@@ -219,7 +256,11 @@ class ShellGamePhaseManager:
         self._phase = Phase.ACT
         self._step_in_phase = 0
         if env is not None:
-            self._handoff_to_dynamic_cups(env)
+            # Final sync: ensure ball is centered under the hiding cup.
+            self._sync_ball_to_hiding_cup(env)
+            # Cups become dynamic so the gripper can physically lift them.
+            # Ball stays kinematic (visual marker).
+            self._set_cups_kinematic(env, False)
 
     # ------------------------------------------------------------------
     # Shuffle logic
@@ -257,8 +298,8 @@ class ShellGamePhaseManager:
 
         self._cup_positions[i] = new_i
         self._cup_positions[j] = new_j
-        self._set_script_cup_pose(env, i, tuple(new_i))
-        self._set_script_cup_pose(env, j, tuple(new_j))
+        self._set_cup_pose(env, i, tuple(new_i))
+        self._set_cup_pose(env, j, tuple(new_j))
         if self._ball_cup_idx in (i, j):
             self._sync_ball_to_hiding_cup(env)
 
@@ -268,8 +309,8 @@ class ShellGamePhaseManager:
             # Finalize this swap: snap to exact final positions
             self._cup_positions[i] = list(pos_j_start)
             self._cup_positions[j] = list(pos_i_start)
-            self._set_script_cup_pose(env, i, tuple(pos_j_start))
-            self._set_script_cup_pose(env, j, tuple(pos_i_start))
+            self._set_cup_pose(env, i, tuple(pos_j_start))
+            self._set_cup_pose(env, j, tuple(pos_i_start))
 
             # Update init positions for next swap
             self._cup_init_positions[i], self._cup_init_positions[j] = (
@@ -302,169 +343,72 @@ class ShellGamePhaseManager:
             cup_z = (cup.data.root_pos_w - env.scene.env_origins)[0, 2].item()
             if cup_z > CUP_Z + lift_threshold:
                 self._selected_cup_index = i
-                if i == self._ball_cup_idx:
-                    self._reveal_ball(env)
+                self._ball_revealed = True
                 return
 
     # ------------------------------------------------------------------
     # Sim helpers
     # ------------------------------------------------------------------
 
-    def _place_script_cups(self, env: ManagerBasedRLEnv) -> None:
-        """Place all active scripted cups at their computed positions."""
+    def _place_cups(self, env: ManagerBasedRLEnv) -> None:
+        """Place all active cups at their computed positions."""
         for i in range(self._num_cups):
-            self._set_script_cup_pose(env, i, tuple(self._cup_positions[i]))
-
-    def _hide_dynamic_cups(self, env: ManagerBasedRLEnv) -> None:
-        """Keep dynamic Act cups out of view until the Act handoff."""
-        for i in range(5):
-            cup = env.scene[f"cup_{i}"]
-            self._set_named_cup_pose(env, f"cup_{i}", HIDDEN_POS)
-            self._clear_cup_velocity(env, cup)
-
-    def _handoff_to_dynamic_cups(self, env: ManagerBasedRLEnv) -> None:
-        """Swap from kinematic script cups to dynamic Act cups without a visible jump."""
-        for i in range(self._num_cups):
-            dynamic_cup = env.scene[f"cup_{i}"]
-            self._set_named_cup_pose(env, f"cup_{i}", tuple(self._cup_positions[i]))
-            self._clear_cup_velocity(env, dynamic_cup)
-
-        # Swap visibility explicitly. Moving scripted cups below the scene is
-        # still useful for collision separation, but visibility avoids a one-frame
-        # visual overlap that makes cups look larger at handoff.
-        self._set_cup_family_visible(env, "script_cup", False)
-        self._set_cup_family_visible(env, "cup", True)
-
-        # Hide script cups before the next physics step, so script and dynamic
-        # cups are never overlapping collision bodies during simulation.
-        for i in range(5):
-            self._set_script_cup_pose(env, i, HIDDEN_POS)
-
-        # The FSM reads cup.data immediately after this transition. Refresh the
-        # scene buffers so it targets the freshly placed dynamic cups.
-        self._refresh_scene_buffers(env)
+            self._set_cup_pose(env, i, tuple(self._cup_positions[i]))
 
     def _sync_ball_to_hiding_cup(self, env: ManagerBasedRLEnv) -> None:
         """Keep the hidden ball at the table position of the physical hiding cup."""
         pos = self._cup_positions[self._ball_cup_idx]
         self._set_ball_pose(env, (pos[0], pos[1], BALL_Z))
 
-    def _reveal_ball(self, env: ManagerBasedRLEnv) -> None:
-        """Reveal the ball after the correct cup has been lifted."""
-        if self._ball_revealed:
-            return
-        self._sync_ball_to_hiding_cup(env)
-        self._ball_revealed = True
+    def _track_ball_to_hiding_cup(self, env: ManagerBasedRLEnv) -> None:
+        """During ACT, follow the hiding cup's x,y but stay at table height."""
+        cup = env.scene[f"cup_{self._ball_cup_idx}"]
+        cup_pos = (cup.data.root_pos_w - env.scene.env_origins)[0]
+        self._set_ball_pose(env, (cup_pos[0].item(), cup_pos[1].item(), BALL_Z))
 
-    def _set_script_cups_kinematic(self, env: ManagerBasedRLEnv, enabled: bool) -> None:
-        """Keep scripted cups kinematic while they are driven by PhaseManager."""
-        for i in range(5):
-            self._set_asset_kinematic(env, f"script_cup_{i}", enabled)
-
-    def _set_cup_family_visible(self, env: ManagerBasedRLEnv, family: str, visible: bool) -> None:
-        for i in range(5):
-            self._set_asset_visible(env, f"{family}_{i}", visible)
-
-    def _set_asset_visible(self, env: ManagerBasedRLEnv, asset_name: str, visible: bool) -> None:
+    def _set_cups_kinematic(self, env: ManagerBasedRLEnv, enabled: bool) -> None:
         try:
-            from pxr import UsdGeom
+            import re
+            import omni.usd
+            from pxr import Usd, UsdPhysics
         except Exception:
             return
 
-        token = "inherited" if visible else "invisible"
-        for prim in self._iter_asset_prims(env, asset_name):
-            try:
-                imageable = UsdGeom.Imageable(prim)
-                if not imageable:
-                    continue
-                imageable.CreateVisibilityAttr().Set(token)
-            except Exception:
-                continue
+        stage = omni.usd.get_context().get_stage()
 
-    def _apply_cup_mass_properties(self, env: ManagerBasedRLEnv) -> None:
-        """Author explicit cup mass on the actual rigid-body prims in the USD asset."""
-        for i in range(5):
-            self._set_asset_mass(env, f"cup_{i}", _CUP_MASS_KG)
-            self._set_asset_mass(env, f"script_cup_{i}", _CUP_MASS_KG)
+        for i in range(self._num_cups):
+            cup = env.scene[f"cup_{i}"]
+            cfg_path = getattr(getattr(cup, "cfg", None), "prim_path", "")
+            pattern = re.compile("^" + cfg_path + "$")
 
-    def _refresh_scene_buffers(self, env: ManagerBasedRLEnv) -> None:
-        update = getattr(env.scene, "update", None)
-        if not callable(update):
-            return
-        try:
-            update(dt=getattr(env, "physics_dt", 0.0))
-        except Exception:
-            return
+            roots = [prim for prim in stage.Traverse() if pattern.match(str(prim.GetPath()))]
+            for root in roots:
+                for prim in Usd.PrimRange(root):
+                    if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                        continue
+                    api = UsdPhysics.RigidBodyAPI.Apply(prim)
+                    attr = api.GetKinematicEnabledAttr()
+                    if not attr:
+                        attr = api.CreateKinematicEnabledAttr()
+                    attr.Set(bool(enabled))
 
-    def _set_asset_kinematic(self, env: ManagerBasedRLEnv, asset_name: str, enabled: bool) -> None:
-        try:
-            from pxr import UsdPhysics
-        except Exception:
-            return
-
-        for prim in self._iter_asset_prims(env, asset_name):
-            try:
-                if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                    continue
-                rigid_api = UsdPhysics.RigidBodyAPI.Apply(prim)
-                rigid_api.CreateRigidBodyEnabledAttr(True).Set(True)
-                rigid_api.CreateKinematicEnabledAttr(bool(enabled)).Set(bool(enabled))
-            except Exception:
-                continue
-
-    def _set_asset_mass(self, env: ManagerBasedRLEnv, asset_name: str, mass_kg: float) -> None:
-        try:
-            from pxr import UsdPhysics
-        except Exception:
-            return
-
-        for prim in self._iter_asset_prims(env, asset_name):
-            try:
-                if not (prim.HasAPI(UsdPhysics.RigidBodyAPI) or prim.HasAPI(UsdPhysics.CollisionAPI)):
-                    continue
-                mass_api = UsdPhysics.MassAPI.Apply(prim)
-                mass_api.CreateMassAttr(float(mass_kg)).Set(float(mass_kg))
-                mass_api.CreateDensityAttr(0.0).Set(0.0)
-            except Exception:
-                continue
-
-    def _iter_asset_prims(self, env: ManagerBasedRLEnv, asset_name: str):
-        asset = env.scene[asset_name]
-        stack = list(getattr(asset, "prims", []))
-        while stack:
-            prim = stack.pop()
-            yield prim
-            try:
-                stack.extend(list(prim.GetAllChildren()))
-            except Exception:
-                pass
-
-    def _clear_cup_velocity(self, env: ManagerBasedRLEnv, cup) -> None:
-        """Clear scripted-phase or hidden-cup residual velocity before handoff."""
-        write_velocity = getattr(cup, "write_root_velocity_to_sim", None)
-        if not callable(write_velocity):
-            return
-        try:
-            zero_velocity = torch.zeros(env.num_envs, 6, device=env.device, dtype=torch.float32)
-            write_velocity(zero_velocity)
-        except Exception:
-            return
-
-    def _set_script_cup_pose(
+    def _set_cup_pose(
         self, env: ManagerBasedRLEnv, cup_index: int, pos: tuple[float, ...]
     ) -> None:
-        self._set_named_cup_pose(env, f"script_cup_{cup_index}", pos)
-
-    def _set_named_cup_pose(
-        self, env: ManagerBasedRLEnv, cup_name: str, pos: tuple[float, ...]
-    ) -> None:
-        cup = env.scene[cup_name]
+        cup = env.scene[f"cup_{cup_index}"]
+        # rot (0, 1, 0, 0) = 180 deg about X so the cup stays inverted (mouth-down).
+        # Runs every frame in Phases 1-3, so it must match _make_cup_cfg's init rot;
+        # otherwise the cup would be flipped back upright here.
         pose = torch.tensor(
-            [[pos[0], pos[1], pos[2], 1.0, 0.0, 0.0, 0.0]],
+            [[pos[0], pos[1], pos[2], 0.0, 1.0, 0.0, 0.0]],
             device=env.device,
             dtype=torch.float32,
         ).repeat(env.num_envs, 1)
         cup.write_root_pose_to_sim(pose)
+        if hasattr(cup, "write_root_velocity_to_sim"):
+            cup.write_root_velocity_to_sim(
+                torch.zeros(env.num_envs, 6, device=env.device)
+            )
 
     def _set_ball_pose(
         self, env: ManagerBasedRLEnv, pos: tuple[float, ...]
@@ -476,3 +420,7 @@ class ShellGamePhaseManager:
             dtype=torch.float32,
         ).repeat(env.num_envs, 1)
         ball.write_root_pose_to_sim(pose)
+        if hasattr(ball, "write_root_velocity_to_sim"):
+            ball.write_root_velocity_to_sim(
+                torch.zeros(env.num_envs, 6, device=env.device)
+            )
