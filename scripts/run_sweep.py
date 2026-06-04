@@ -33,6 +33,11 @@ from typing import Any
 
 import yaml
 
+from project_cache import configure_project_cache, project_cache_env
+
+
+configure_project_cache()
+
 
 def load_yaml(path: str) -> dict:
     with open(path, "r") as f:
@@ -108,6 +113,35 @@ def hf_dataset_exists(repo_id: str) -> bool:
         return False
     except Exception as exc:
         print(f"  [datagen] HF dataset check failed for {repo_id}: {exc}")
+        return False
+
+
+def download_hf_dataset_to_local(repo_id: str, local_dir: str, revision: str = "main") -> bool:
+    """Download a Hub dataset into the project-local LeRobot cache path."""
+
+    target = Path(os.path.expanduser(local_dir)).resolve()
+    if local_dataset_exists(str(target)):
+        return True
+
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception:
+        print("  [datagen] huggingface_hub is unavailable; cannot download HF dataset locally.")
+        return False
+
+    print(f"  [datagen] downloading HF dataset to project cache: {repo_id} -> {target}")
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=revision,
+            local_dir=str(target),
+            local_dir_use_symlinks=False,
+        )
+        return True
+    except Exception as exc:
+        print(f"  [datagen] HF dataset download failed for {repo_id}: {exc}")
         return False
 
 
@@ -187,7 +221,7 @@ def append_key_value_args(cmd: list[str], args: dict[str, Any]) -> None:
 def run_command(cmd: list[str] | str, *, shell: bool = False) -> None:
     printable = cmd if isinstance(cmd, str) else " ".join(shlex.quote(str(part)) for part in cmd)
     print(f"  $ {printable}")
-    subprocess.run(cmd, check=True, shell=shell)
+    subprocess.run(cmd, check=True, shell=shell, env=project_cache_env())
 
 
 def run_datagen(cfg: dict, context: dict[str, Any], extra_args: list[str] | None = None) -> str:
@@ -208,9 +242,15 @@ def run_datagen(cfg: dict, context: dict[str, Any], extra_args: list[str] | None
         return dataset_file
 
     # If the dataset is already on Hugging Face, skip expensive simulation and
-    # let lerobot-train resolve/cache the repo through --dataset.repo_id.
+    # download it into the project-local cache so training can use --dataset.root.
     if hf_reuse and hf_dataset_exists(context["dataset_repo_id"]):
-        print(f"  [datagen] HF dataset exists, skipping generation: {context['dataset_repo_id']}")
+        downloaded = download_hf_dataset_to_local(
+            context["dataset_repo_id"], context["local_dataset_dir"]
+        )
+        if downloaded:
+            print(f"  [datagen] HF dataset exists, reusing project cache: {context['local_dataset_dir']}")
+        else:
+            print(f"  [datagen] HF dataset exists, skipping generation: {context['dataset_repo_id']}")
         return dataset_file
 
     cmd = [
@@ -311,7 +351,9 @@ def run_training(cfg: dict, context: dict[str, Any]) -> str | None:
         f"--policy.repo_id={context['policy_repo_id']}",
     ]
     # Keep dataset.repo_id for metadata, but point LeRobot at the local cache
-    # when it exists so training does not fetch the dataset again.
+    # whenever possible so training does not fetch into the home directory.
+    if not local_dataset_exists(context["local_dataset_dir"]):
+        download_hf_dataset_to_local(context["dataset_repo_id"], context["local_dataset_dir"])
     if local_dataset_exists(context["local_dataset_dir"]):
         cmd.append(f"--dataset.root={context['local_dataset_dir']}")
 

@@ -1,0 +1,5 @@
+experiment_name: exp5_shuffle_speed
+description: "Fixed 3 cups and 2 shuffles. Vary shuffle speed to test temporal tracking robustness."
+
+sweep:
+  task.shuffle_speed: [0.5, 1.0, 1.5, 2.0]

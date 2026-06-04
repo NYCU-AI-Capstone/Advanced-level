@@ -203,12 +203,92 @@ lerobot-train \
   --dataset.repo_id=${HF_USER}/shellbench-demo \
   --dataset.root=.cache/lerobot/${HF_USER}/shellbench-demo \
   --policy.type=diffusion \
-  --output_dir=results/manual_shellbench/checkpoints \
-  --job_name=shellbench_manual \
+  --output_dir=results/shellbench/checkpoints \
+  --job_name=shellbench \
   --policy.device=cuda \
   --wandb.enable=true \
   --policy.n_obs_steps=8 \
   --training.num_epochs=100
+```
+
+```
+lerobot-train \
+  --dataset.repo_id=johnnyli1220/shellbench-num_cups-5 \
+  --dataset.revision=main \
+  --policy.type=diffusion \
+  --output_dir=outputs/train/shellbench-diffusion-num_cups-5 \
+  --job_name=shellbench_diffusion_num_cups-5 \
+  --policy.device=cuda \
+  --wandb.enable=false \
+  --policy.repo_id=YouZhe/shellbench-diffusion-num_cups-5 \
+  --batch_size=8 \
+  --steps=100000 \
+  --save_freq=10000 \
+  --log_freq=100 \
+  --num_workers=8
+```
+
+```
+lerobot-train \
+  --dataset.repo_id=johnnyli1220/shellbench-num_shuffles-5 \
+  --dataset.revision=main \
+  --policy.type=diffusion \
+  --output_dir=outputs/train/shellbench-num_shuffles-5 \
+  --job_name=shellbench-num_shuffles-5 \
+  --policy.device=cuda \
+  --wandb.enable=false \
+  --policy.repo_id=YouZhe/shellbench-num_shuffles-5 \
+  --batch_size=8 \
+  --steps=100000 \
+  --save_freq=10000 \
+  --log_freq=100 \
+  --num_workers=8
+```
+
+```
+lerobot-train \
+  --dataset.repo_id=johnnyli1220/shellbench-num_cups-3 \
+  --dataset.revision=main \
+  --dataset.root=.cache/huggingface/lerobot/johnnyli1220/shellbench-num_cups-3 \
+  --policy.type=vqbet \
+  --output_dir=outputs/train/shellbench-vqbet-num_cups-3 \
+  --job_name=shellbench-vqbet-num_cups-3 \
+  --policy.device=cuda \
+  --wandb.enable=false \
+  --policy.repo_id=YouZhe/shellbench-vqbet-num_cups-3 \
+  --batch_size=8 \
+  --steps=100000 \
+  --save_freq=10000 \
+  --log_freq=100 \
+  --num_workers=8
+```
+
+```bash
+python scripts/combine_lerobot_cameras.py \
+  --input-root .cache/huggingface/lerobot/johnnyli1220/shellbench-num_cups-3 \
+  --output-root .cache/huggingface/lerobot/local/shellbench-num_cups-3-combined \
+  --input-repo-id johnnyli1220/shellbench-num_cups-3 \
+  --output-repo-id local/shellbench-num_cups-3-combined \
+  --image-keys observation.images.front observation.images.wrist \
+  --layout horizontal \
+  --overwrite
+```
+
+```bash
+lerobot-train \
+  --dataset.repo_id=local/shellbench-num_cups-3-combined \
+  --dataset.root=.cache/huggingface/lerobot/local/shellbench-num_cups-3-combined \
+  --policy.type=vqbet \
+  --output_dir=outputs/train/shellbench-vqbet-num_cups-3-combined \
+  --job_name=shellbench-vqbet-num_cups-3-combined \
+  --policy.device=cuda \
+  --wandb.enable=false \
+  --policy.repo_id=YouZhe/shellbench-vqbet-num_cups-3-combined \
+  --batch_size=8 \
+  --steps=100000 \
+  --save_freq=10000 \
+  --log_freq=100 \
+  --num_workers=8
 ```
 
 ---
@@ -223,6 +303,7 @@ lerobot-train \
 python scripts/eval_shell_game.py \
   --task HCIS-ShellGame-SingleArm-v0 \
   --device cuda \
+  --headless \
   --enable_cameras \
   --policy_backend lerobot \
   --policy_type lerobot-diffusion \
@@ -247,6 +328,7 @@ python scripts/eval_shell_game.py \
   --task HCIS-ShellGame-SingleArm-v0 \
   --device cuda \
   --enable_cameras \
+  --headless \
   --policy_backend oracle \
   --num_episodes 50 \
   --num_cups 3 \
@@ -341,6 +423,12 @@ python scripts/run_sweep.py \
 python scripts/run_sweep.py \
   --base configs/base.yaml \
   --sweep configs/experiments/exp4_oracle/sweep.yaml
+
+# Exp5: 換速度
+python scripts/run_sweep.py \
+  --base configs/base.yaml \
+  --sweep configs/experiments/exp5_shuffle_speed/sweep.yaml
+
 ```
 
 ### 5.3 跳過步驟
@@ -564,6 +652,10 @@ results/exp1_shuffle_scaling/
 | `results/<exp>/<variant>/metrics.json` | evaluation output |
 | `results/<exp>/summary.json` | sweep 彙整指標 |
 | `.cache/lerobot/{dataset_repo_id}` | `run_sweep.py` 用來偵測/指定 `--dataset.root` 的專案本地 dataset path |
+| `.cache/huggingface/` | Hugging Face Hub / datasets 的專案本地 cache |
+| `.cache/huggingface/lerobot/` | LeRobot dataset / recorder 的專案本地 root (`HF_LEROBOT_HOME`) |
+| `.cache/wandb/` | W&B runs、cache、config 的專案本地位置 |
+| `.cache/torch/` | Torch model/cache 下載位置 |
 
 ---
 
@@ -592,7 +684,7 @@ python scripts/datagen/generate_shell_game.py \
   --enable_cameras \
   --record \
   --dataset_file ./datasets/hard_mode.hdf5 \
-  --num_demos 20 \
+  --num_demos 3 \
   --num_cups 5 \
   --num_shuffles 5 \
   --shuffle_speed 2.0
@@ -650,6 +742,14 @@ extra_args:
 
 預設 `policy.repo_id` 會把 variant name 加進 repo id，例如 `alice/shellbench-policy-num_shuffles-2`，所以不同 variant 不會共用同一個 repo。若你手動把 `policy.repo_id` 設成固定值，才可能覆蓋或混在同一個 repo。
 
-### Q: `.cache` 現在涵蓋所有輸出嗎？
+### Q: `.cache` 現在涵蓋所有下載嗎？
 
-不是。`.cache/lerobot/...` 目前只用於本地 dataset reuse 和 training 的 `--dataset.root`。Sweep results、checkpoint、metrics 仍在 `results/...`。HF dataset 若不存在於本地但存在於 Hub，目前由 LeRobot 自己處理下載位置；runner 尚未強制下載到專案 `.cache`。
+是，專案入口腳本會把 Hugging Face、LeRobot recorder、W&B、Torch 等常見 cache 指到專案 `.cache/`。`run_sweep.py` 若發現 HF dataset 已存在，也會先用 `snapshot_download(..., local_dir=.cache/lerobot/{dataset_repo_id})` 把 dataset 下載到專案內，再用 `--dataset.root` 交給 `lerobot-train`。
+
+如果你手動直接跑 `lerobot-train`、`hf download` 或 `wandb`，請先執行：
+
+```bash
+source scripts/project_cache_env.sh
+```
+
+Sweep results、checkpoint、metrics 仍在 `results/...`，不是 cache。

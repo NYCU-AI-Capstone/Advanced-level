@@ -133,7 +133,8 @@ python scripts/datagen/generate.py \
 Upload the recorded dataset to Hugging Face Hub:
 
 ```bash
-hf upload ${HF_USER}/<repo_id> ~/.cache/huggingface/lerobot/${HF_USER}/<repo_id>/
+source scripts/project_cache_env.sh
+hf upload ${HF_USER}/<repo_id> .cache/huggingface/lerobot/${HF_USER}/<repo_id>/
 ```
 
 # LeRobot Training

@@ -14,6 +14,11 @@ import json as _json
 import multiprocessing
 from pathlib import Path as _Path
 
+from project_cache import configure_project_cache
+
+
+configure_project_cache()
+
 
 # Fields that newer LeRobot adds at training time but the inference-side
 # LeRobot installed in the worker image doesn't accept. They're all

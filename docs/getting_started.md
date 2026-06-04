@@ -259,7 +259,8 @@ python scripts/datagen/generate.py \
 ### Upload the generated dataset
 
 ```bash
-hf upload ${HF_USER}/<repo_id> ~/.cache/huggingface/lerobot/${HF_USER}/<repo_id>/
+source scripts/project_cache_env.sh
+hf upload ${HF_USER}/<repo_id> .cache/huggingface/lerobot/${HF_USER}/<repo_id>/
 ```
 
 For the full data generation pipeline reference, see [Synthetic Data Generation Pipeline](synthetic_data_generation.md).

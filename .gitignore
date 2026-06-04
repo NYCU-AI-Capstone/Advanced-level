@@ -13,6 +13,7 @@ dist/
 .vscode/
 
 # Runtime directories
+.cache/
 data/*
 !data/.gitkeep
 checkpoints/*
@@ -38,3 +39,9 @@ datasets/*
 # Private external task files
 private_tasks/*
 !private_tasks/.gitkeep
+
+outputs/*
+
+# Personal notes
+frames.md
+*_explan.md

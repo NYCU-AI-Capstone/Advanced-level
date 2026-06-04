@@ -10,6 +10,11 @@ if multiprocessing.get_start_method() != "spawn":
 import argparse
 import signal
 
+from project_cache import configure_project_cache
+
+
+configure_project_cache()
+
 from isaaclab.app import AppLauncher
 
 # add argparse arguments

@@ -27,6 +27,11 @@ import json
 import os
 import time
 
+from project_cache import configure_project_cache
+
+
+configure_project_cache()
+
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="ShellBench evaluation.")
