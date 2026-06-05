@@ -2,6 +2,7 @@
 
 這份文件用白話講「我們做了什麼、檔案各管什麼、整個流程怎麼跑」。
 技術細節與設計取捨在 [`implementation_plan.md`](./implementation_plan.md)。
+實驗紀錄與目前進度在 [`experiment_log.md`](./experiment_log.md)。
 
 ---
 
@@ -30,7 +31,7 @@ ShellBench 是「猜杯子」：球藏在哪只在開頭 (Reveal) 看得到，�
 ```
 LSTM/policy/
 ├── configuration_lstm.py   ← 超參數 + 「要取哪幾幀來訓練」
-├── modeling_lstm.py        ← 模型本體（ResNet18 + LSTM + 動作輸出）
+├── modeling_lstm.py        ← 模型本體（ResNet18 + LSTM + 動作輸出 + 杯子分類）
 ├── processor_lstm.py       ← 影像/數值的正規化前後處理
 ├── register.py             ← 把以上接進 LeRobot 的「膠水」
 └── __init__.py             ← import 入口
@@ -39,7 +40,7 @@ LSTM/policy/
 | 檔案 | 管什麼 | 白話 |
 |------|--------|------|
 | `configuration_lstm.py` | 設定 | LSTM 有幾層、影像縮多小、**訓練時一個樣本涵蓋幾幀**。讓 `--policy.type=lstm` 能被認得。 |
-| `modeling_lstm.py` | 模型 | 影像→ResNet18 壓成特徵→LSTM 攜帶記憶→輸出 8 維動作。訓練走 `forward`，跑機器人走 `select_action`。 |
+| `modeling_lstm.py` | 模型 | 影像→ResNet18 壓成特徵→LSTM 攜帶記憶→輸出 8 維動作 + 3-way 杯子分類。訓練走 `forward`，跑機器人走 `select_action`。 |
 | `processor_lstm.py` | 前後處理 | 進模型前把影像/數值正規化，出模型後還原。直接沿用 LeRobot 內建零件。 |
 | `register.py` | 接線 | LeRobot 的 policy 清單是寫死的，認不得 lstm。這裡用 monkeypatch 把 lstm 塞進去，**不用改 LeRobot 原始碼**。 |
 
@@ -67,6 +68,7 @@ LeRobot 內建 policy（act/diffusion/...）是**寫死在程式裡**的清單�
 ②  訓練  lerobot-train --policy.type=lstm ...
     每個訓練樣本 = 一段「長度 L 的影像/動作序列」（由 config 的 delta_indices 決定）
     LSTM 對這段序列做 BPTT，學會「把開頭的球位置記到最後再選杯子」
+    Loss = MSE（動作預測）+ CE（杯子分類）
             │
             ▼
 ③  產出 checkpoint（模型權重 + config）
@@ -84,12 +86,15 @@ LeRobot 內建 policy（act/diffusion/...）是**寫死在程式裡**的清單�
 
 ## 幾個關鍵設計（為什麼這樣做）
 
-1. **動作輸出用最簡單的 MSE 回歸**（直接吐 8 個數字）。
-   因為示範資料乾淨、掀杯動作單純，先求跑通；之後要對齊 Robomimic 再換 GMM。
+1. **動作輸出用 MSE 回歸 + cup classification head。**
+   MSE 學「怎麼掀杯子」（操作技能），CE 學「掀哪個杯子」（記憶決策）。
+   純 MSE 會把三個方向的軌跡取平均（mode averaging），導致模型永遠去同一個杯子。
+   Cup classification head 用 cross-entropy 提供離散信號，強制 LSTM 區分三個杯子。
+   詳見 `experiment_log.md`。
 
 2. **訓練序列用「跳幀涵蓋整段」**。
    episode 有 500+ 幀，全部硬塞 GPU 會爆。用 `seq_len`(L) + `obs_stride` 控制要取幾幀、隔多遠。
-   ⚠️ 第一版 `obs_stride=1`（每幀都取）；若改成跳幀，**評估端也要同樣跳幀**，否則訓練/評估的時間節奏不一致。
+   目前用 `seq_len=200, obs_stride=3` → 涵蓋 600 幀，蓋住整段 episode（Reveal → Act）。
 
 3. **評估時 hidden state 跨整段 episode 攜帶**。
    `select_action` 每被呼叫一次就更新一次記憶；`reset()` 在每個 episode 開頭清空。
@@ -111,13 +116,14 @@ python LSTM/scripts/smoke_test.py
 會驗證三件事（不需 dataset / GPU）：①lerobot 認得 `--policy.type=lstm` ②訓練 forward+BPTT 跑得動
 ③推論 select_action 攜帶記憶。看到 `✅ ALL SMOKE TESTS PASSED` 就 OK。
 
-## 目前狀態 / 還沒做的
+## 目前狀態
 
 - ✅ plugin 五個檔案（config / model / processor / register / init）
-- ✅ 容器內 smoke test 通過（註冊 + 訓練 BPTT + 推論記憶攜帶）
-- ⬜ 訓練 wrapper（`LSTM/scripts/train_lstm.py`）：先 import register 再呼叫 lerobot-train
-- ⬜ 評估 wrapper（`LSTM/scripts/eval_lstm.py`）：先 import register 再跑 eval_shell_game
-- ⬜ sweep config（`LSTM/configs/`）：第一版固定 num_shuffles=0 打通
-- ⬜ 在容器內實際訓練 + 評估，確認 DSR > 1/3
+- ✅ 容器內 smoke test 通過
+- ✅ train/eval wrapper 完成
+- ✅ 已跑三輪實驗（96px/128px/160px），確認操作能力 OK (MSR=1.0)
+- ✅ 發現 MSE mode averaging 問題，已實作 cup classification head
+- ⬜ **下一步：用 cup classification head 重新訓練，驗證 DSR 改善**
+- ⬜ 掃 num_shuffles 0..5 畫記憶曲線（Phase 3）
 
-> 還沒實際在容器裡 import 跑過（host 沒裝 lerobot）。下一步就是寫 wrapper、進容器跑通 num_shuffles=0。
+> 詳細實驗紀錄和下一步指引見 [`experiment_log.md`](./experiment_log.md)。
