@@ -85,7 +85,7 @@ class LSTMPolicy(PreTrainedPolicy):
             dropout=config.dropout if config.num_lstm_layers > 1 else 0.0,
         )
 
-        # action head（簡單 MSE 回歸）
+        # action head（MSE 回歸）
         action_dim = config.action_feature.shape[0]
         self.action_head = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size),
@@ -93,9 +93,18 @@ class LSTMPolicy(PreTrainedPolicy):
             nn.Linear(config.hidden_size, action_dim),
         )
 
+        # cup classification head（解決 MSE mode averaging：強制 LSTM 學會
+        # 根據記憶區分不同杯子，提供離散的梯度信號）
+        self.cup_head = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size // 4),
+            nn.ReLU(),
+            nn.Linear(config.hidden_size // 4, config.num_cups),
+        )
+
         # 推論用的 hidden state（跨 select_action 呼叫攜帶；命名刻意避開 eval
         # 的 _clear_cached_actions() 會掃到的 action_queue 之類欄位）
         self._lstm_state: tuple[Tensor, Tensor] | None = None
+        self._cup_logits: Tensor | None = None
 
         # 推論 stride：每 N 次 select_action 呼叫才真正更新 hidden state、算新動作，
         # 其餘次回傳上一次的動作。讓 eval 端不需要任何修改——它照常每幀呼叫 policy，
@@ -170,22 +179,56 @@ class LSTMPolicy(PreTrainedPolicy):
         self._lstm_state = None
         self._stride_counter = 0
         self._cached_action = None
+        self._cup_logits = None
+
+    @staticmethod
+    def _derive_cup_target(actions: Tensor) -> Tensor:
+        """從 ground truth action 序列推斷 target cup（不需額外 label）。
+
+        用序列後 30% 的 action dim 0（base joint, normalized）分三群：
+          a0 < -0.7 → cup 0（左）  (raw ≈ -0.07)
+          a0 > +0.7 → cup 2（右）  (raw ≈ +0.08)
+          otherwise  → cup 1（中） (raw ≈  0.00)
+        閾值在 normalized space（MEAN_STD），三群中心分別在 -1.5 / -0.06 / +1.5。
+        """
+        L = actions.shape[1]
+        tail = actions[:, int(L * 0.7):, 0]  # [B, tail_len]
+        mean_a0 = tail.mean(dim=1)            # [B]
+        cups = torch.ones(mean_a0.shape, dtype=torch.long, device=actions.device)  # default=1 (中)
+        cups[mean_a0 < -0.7] = 0  # 左
+        cups[mean_a0 > 0.7] = 2   # 右
+        return cups
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict | None]:
-        """訓練：對整段序列做 BPTT，回傳 masked MSE loss。"""
+        """訓練：MSE action loss + cross-entropy cup classification loss。"""
         feats = self._encode_observation(batch)          # [B, L, input]
         out, _ = self.lstm(feats)                          # [B, L, hidden]
         pred = self.action_head(out)                       # [B, L, action_dim]
         target = batch[ACTION]                             # [B, L, action_dim]
 
+        # MSE loss（跟原本一樣，有 pad mask）
         per_step = F.mse_loss(pred, target, reduction="none").mean(dim=-1)  # [B, L]
         pad_key = f"{ACTION}_is_pad"
         if pad_key in batch:
-            valid = (~batch[pad_key]).float()              # [B, L]，padding 幀不算 loss
-            loss = (per_step * valid).sum() / valid.sum().clamp(min=1.0)
+            valid = (~batch[pad_key]).float()              # [B, L]
+            mse_loss = (per_step * valid).sum() / valid.sum().clamp(min=1.0)
         else:
-            loss = per_step.mean()
-        return loss, {"mse_loss": loss.item()}
+            mse_loss = per_step.mean()
+
+        # Cup classification loss（用序列後段的 hidden state 預測 target cup）
+        cup_target = self._derive_cup_target(target)       # [B]
+        L = out.shape[1]
+        cup_logits = self.cup_head(out[:, int(L * 0.7):])  # [B, tail_len, num_cups]
+        cup_logits_mean = cup_logits.mean(dim=1)            # [B, num_cups]
+        cup_loss = F.cross_entropy(cup_logits_mean, cup_target)
+
+        w = self.config.cup_loss_weight
+        loss = mse_loss + w * cup_loss
+        return loss, {
+            "mse_loss": mse_loss.item(),
+            "cup_loss": cup_loss.item(),
+            "loss": loss.item(),
+        }
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
@@ -206,6 +249,8 @@ class LSTMPolicy(PreTrainedPolicy):
         if should_process or self._cached_action is None:
             feat = self._encode_observation(batch)             # [B, 1, input]
             out, self._lstm_state = self.lstm(feat, self._lstm_state)
-            self._cached_action = self.action_head(out[:, -1]) # [B, action_dim]
+            hidden = out[:, -1]                                # [B, hidden]
+            self._cached_action = self.action_head(hidden)     # [B, action_dim]
+            self._cup_logits = self.cup_head(hidden)           # [B, num_cups]
 
         return self._cached_action
