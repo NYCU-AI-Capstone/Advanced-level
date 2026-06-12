@@ -7,7 +7,7 @@
 能被 draccus 解析外，還要 monkeypatch 這兩個 factory，讓它們認得 lstm。
 
 用法：任何進程（train wrapper / eval wrapper）在呼叫 lerobot 前先
-    import LSTM.policy.register
+    import policies.lstm.policy.register
 即可。重複 import 是安全的（patch 有 idempotent 保護）。
 """
 

@@ -7,24 +7,23 @@
   3. 推論路徑：select_action 回傳單一動作、hidden state 跨呼叫攜帶（記憶機制）
 
 用法（在容器內）：
-    cd /workspace/aicapstone && python LSTM/scripts/smoke_test.py
+    cd /workspace/aicapstone && python policies/lstm/scripts/smoke_test.py
 """
 
 import pathlib
 import sys
 
-# 讓 `python LSTM/scripts/smoke_test.py` 也能 import LSTM（把 repo root 加進 sys.path）
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
 import torch
 
-import LSTM.policy.register  # noqa: F401,E402  觸發註冊 + factory patch
+import policies.lstm.policy.register  # noqa: F401,E402  觸發註冊 + factory patch
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.policies.factory import get_policy_class
 
-from LSTM.policy.configuration_lstm import LSTMConfig
-from LSTM.policy.modeling_lstm import LSTMPolicy
+from policies.lstm.policy.configuration_lstm import LSTMConfig
+from policies.lstm.policy.modeling_lstm import LSTMPolicy
 
 
 def test_registration() -> None:
@@ -50,15 +49,22 @@ def _dummy_config() -> LSTMConfig:
 
 
 def test_train_path() -> None:
-    policy = LSTMPolicy(_dummy_config())
+    cfg = _dummy_config()
+    cfg.obs_stride = 3
+    cfg.current_obs_frames = 2
+    cfg.action_horizon = 4
+    policy = LSTMPolicy(cfg)
     policy.train()
-    b, length = 2, 4
+    b, length = 2, cfg.seq_len
+    obs_length = len(cfg.observation_delta_indices)
     batch = {
-        "observation.images.front": torch.rand(b, length, 3, 64, 64),
-        "observation.images.wrist": torch.rand(b, length, 3, 64, 64),
-        "observation.state": torch.rand(b, length, 9),
-        "action": torch.rand(b, length, 8),
-        "action_is_pad": torch.zeros(b, length, dtype=torch.bool),
+        "observation.images.front": torch.rand(b, obs_length, 3, 64, 64),
+        "observation.images.wrist": torch.rand(b, obs_length, 3, 64, 64),
+        "observation.state": torch.rand(b, obs_length, 9),
+        "action": torch.rand(b, length * cfg.action_horizon, 8),
+        "action_is_pad": torch.zeros(
+            b, length * cfg.action_horizon, dtype=torch.bool
+        ),
     }
     loss, info = policy.forward(batch)
     loss.backward()
@@ -66,7 +72,10 @@ def test_train_path() -> None:
 
 
 def test_eval_path() -> None:
-    policy = LSTMPolicy(_dummy_config())
+    cfg = _dummy_config()
+    cfg.current_obs_frames = 2
+    cfg.action_horizon = 4
+    policy = LSTMPolicy(cfg)
     policy.eval()
     policy.reset()
     b = 2
@@ -76,17 +85,27 @@ def test_eval_path() -> None:
         "observation.state": torch.rand(b, 9),
     }
     with torch.inference_mode():
-        a1 = policy.select_action(step)
-        policy.select_action(step)
-    assert tuple(a1.shape) == (b, 8), a1.shape
+        chunk = policy.predict_action_chunk(step)
+        policy.reset()
+        actions = [policy.select_action(step) for _ in range(cfg.action_horizon)]
+    assert tuple(chunk.shape) == (b, cfg.action_horizon, 8), chunk.shape
+    assert all(tuple(action.shape) == (b, 8) for action in actions)
+    executed_chunk = torch.stack(actions, dim=1)
+    assert torch.allclose(executed_chunk, chunk), "select_action 沒有依序執行預測 chunk"
+    assert len(policy._action_queue) == 0, "action chunk 未依序消耗完畢"
+    a1 = actions[0]
     assert policy._lstm_state is not None, "hidden state 未被攜帶"
+    assert len(policy._current_features) == 2, "current observation window 未被維護"
     print(f"[3/4] 推論路徑 OK：select_action -> {tuple(a1.shape)}，hidden state 跨呼叫攜帶")
 
 
 def test_save_load() -> None:
     import tempfile
 
-    policy = LSTMPolicy(_dummy_config())
+    cfg = _dummy_config()
+    cfg.current_obs_frames = 2
+    cfg.action_horizon = 4
+    policy = LSTMPolicy(cfg)
     with tempfile.TemporaryDirectory() as d:
         policy.save_pretrained(d)  # 會崩在這裡如果 nn.LSTM + safetensors 共用 storage 沒修
         reloaded = LSTMPolicy.from_pretrained(d, config=policy.config)

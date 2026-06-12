@@ -13,16 +13,24 @@ Advanced-level/
 ├── packages/                  # 兩個核心子套件
 │   ├── umi/                   # UMI 資料處理管線
 │   └── simulator/             # Isaac Lab 模擬器任務定義
+├── policies/                  # Policy 實作
+│   ├── diffusion/             # Diffusion Policy 評估腳本
+│   └── lstm/                  # LSTM Policy（自訂 LeRobot plugin）
 ├── scripts/                   # 入口腳本（資料生成、遙操作、rollout）
-├── configs/                   # Shell Game benchmark 的實驗配置（規劃中）
+├── configs/                   # Shell Game benchmark 的實驗配置
+├── outputs/                   # 訓練/評估結果（gitignored）
+│   ├── diffusion/             # Diffusion Policy 輸出
+│   └── lstm/                  # LSTM Policy 輸出
 ├── umi_pipeline_configs/      # UMI SLAM pipeline 的 YAML 配置
-├── advanced_docs/             # 進階文件（任務描述、實作計劃）
 ├── docs/                      # 使用說明文件
+│   └── shellbench/            # ShellBench 進階文件（任務描述、實作計劃）
 ├── tests/                     # 測試
 ├── data/                      # 資料存放區（.gitkeep）
 ├── checkpoints/               # 模型 checkpoint 存放區（.gitkeep）
 ├── private_tasks/             # 自訂私有 task 存放區
 ├── dependencies/              # Git submodule（IsaacLab）
+├── reports/                   # 期末報告
+├── notes/                     # 工作筆記
 ├── Dockerfile                 # Isaac Sim Docker 容器定義
 ├── Makefile                   # 建構、啟動 Docker 的指令集
 ├── pyproject.toml             # UV workspace 根設定
@@ -282,7 +290,7 @@ UMI 套件也有自己的測試在 `packages/umi/tests/`，涵蓋各 service 和
 
 ---
 
-## 進階任務 — ShellBench (`advanced_docs/`)
+## 進階任務 — ShellBench (`docs/shellbench/`)
 
 專案正在規劃一個新的 benchmark 任務：**ShellBench（猜杯子遊戲）**，用來測量 visuomotor policy 的長期記憶能力。
 
@@ -312,7 +320,7 @@ Shell game 是一個 **non-Markovian** 任務 — 球被蓋住後，三個杯子
 - **SR**（Success Rate）：選對且掀起
 - **κ**（Cohen's Kappa）：校正隨機猜對的因素
 
-詳見 `advanced_docs/task_description.md` 和 `advanced_docs/IMPLEMENT.md`。
+詳見 `docs/shellbench/task_description.md` 和 `docs/shellbench/IMPLEMENT.md`。
 
 ---
 

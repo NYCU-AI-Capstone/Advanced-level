@@ -35,9 +35,17 @@ dependencies/IsaacLab/**/*.egg-info/
 
 datasets/*
 
-# LSTM training outputs (checkpoints, metrics, logs — 很大、不該進 git)
-LSTM/outputs/
+# Policy training outputs (covered by outputs/ rule below, kept explicit for clarity)
+policies/lstm/outputs/
 
 # Private external task files
 private_tasks/*
 !private_tasks/.gitkeep
+
+# Runtime caches and outputs
+.cache/
+outputs/
+
+# Personal notes
+frames.md
+*_explan.md

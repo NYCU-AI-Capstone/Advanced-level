@@ -11,6 +11,12 @@ license = { file = "LICENSE" }
 requires-python = ">=3.10, <3.12"
 dependencies = [
     "umi",
+    "simulator",
+    "isaacsim[all,extscache]==5.1.0",
+    "isaaclab",
+    "isaaclab-assets",
+    "isaaclab-tasks",
+    "h5py",
 ]
 
 [project.optional-dependencies]
@@ -20,13 +26,26 @@ dev = [
 ]
 
 [tool.uv.workspace]
-members = ["packages/umi"]
+members = ["packages/umi", "packages/simulator"]
 
 [tool.uv.sources]
 umi = { workspace = true }
+simulator = { workspace = true }
+isaaclab = { path = "dependencies/IsaacLab/source/isaaclab", editable = true }
+isaaclab-assets = { path = "dependencies/IsaacLab/source/isaaclab_assets", editable = true }
+isaaclab-tasks = { path = "dependencies/IsaacLab/source/isaaclab_tasks", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.uv]
 package = false
+environments = ["sys_platform == 'linux'"]
+extra-index-url = ["https://pypi.nvidia.com"]
+override-dependencies = [
+    "click==8.1.7",
+    "numpy==1.26.0",
+    "packaging==24.2",
+    "pyyaml==6.0.2",
+    "starlette==0.45.3",
+]

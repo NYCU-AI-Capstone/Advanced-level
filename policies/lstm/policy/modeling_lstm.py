@@ -22,6 +22,7 @@ normalization 由 processor pipeline 在 forward/select_action **之前**完成
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 
 import torch
@@ -50,7 +51,7 @@ class LSTMPolicy(PreTrainedPolicy):
     config_class = LSTMConfig
     name = "lstm"
 
-    def __init__(self, config: LSTMConfig):
+    def __init__(self, config: LSTMConfig, **kwargs):
         super().__init__(config)
         config.validate_features()
         self.config = config
@@ -85,24 +86,28 @@ class LSTMPolicy(PreTrainedPolicy):
             dropout=config.dropout if config.num_lstm_layers > 1 else 0.0,
         )
 
-        # action head（簡單 MSE 回歸）
+        # action head：長期 hidden state，可選擇再串接最近 N 個 observation features。
         action_dim = config.action_feature.shape[0]
+        action_input_dim = config.hidden_size + config.current_obs_frames * lstm_input_dim
         self.action_head = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.Linear(action_input_dim, config.hidden_size),
             nn.ReLU(),
-            nn.Linear(config.hidden_size, action_dim),
+            nn.Linear(config.hidden_size, action_dim * config.action_horizon),
         )
 
         # 推論用的 hidden state（跨 select_action 呼叫攜帶；命名刻意避開 eval
         # 的 _clear_cached_actions() 會掃到的 action_queue 之類欄位）
         self._lstm_state: tuple[Tensor, Tensor] | None = None
 
-        # 推論 stride：每 N 次 select_action 呼叫才真正更新 hidden state、算新動作，
-        # 其餘次回傳上一次的動作。讓 eval 端不需要任何修改——它照常每幀呼叫 policy，
-        # 但 policy 自己按 obs_stride 節奏處理，跟訓練時的時間動態一致。
+        # 推論 stride：每 N 次 select_action 呼叫才把 hidden state 往前推進一次。
+        # 每次呼叫仍會用當前 observation + 最近的 hidden state 產生 action，避免 act 階段
+        # 連續多幀沿用同一個 action，讓抓取控制保有逐幀閉迴路修正。
         self._stride = config.obs_stride
         self._stride_counter = 0
-        self._cached_action: Tensor | None = None
+        self._current_features: deque[Tensor] = deque(
+            maxlen=max(1, config.current_obs_frames)
+        )
+        self._action_queue: deque[Tensor] = deque()
 
         self.reset()
 
@@ -152,8 +157,16 @@ class LSTMPolicy(PreTrainedPolicy):
 
     # ------------------------------------------------------------------ API
 
-    def get_optim_params(self) -> dict:
-        return self.parameters()
+    def get_optim_params(self) -> list[dict]:
+        """Use a smaller LR for the visual backbone while training task heads faster."""
+        backbone_params = list(self.backbone.parameters())
+        backbone_ids = {id(param) for param in backbone_params}
+        model_params = [param for param in self.parameters() if id(param) not in backbone_ids]
+        # Keep the main model first because LeRobot logs optimizer.param_groups[0]["lr"].
+        return [
+            {"params": model_params, "lr": self.config.optimizer_lr, "name": "model"},
+            {"params": backbone_params, "lr": self.config.backbone_lr, "name": "backbone"},
+        ]
 
     def _save_pretrained(self, save_directory: Path) -> None:
         """覆寫預設存檔，修掉 nn.LSTM + safetensors 的共用 storage 問題。
@@ -169,43 +182,93 @@ class LSTMPolicy(PreTrainedPolicy):
         """每個 episode 開頭呼叫，清空 LSTM 記憶與 stride 狀態。"""
         self._lstm_state = None
         self._stride_counter = 0
-        self._cached_action = None
+        self._current_features.clear()
+        self._action_queue.clear()
+
+    def reset_action_queue(self) -> None:
+        """Discard a pending action chunk without clearing recurrent memory."""
+        self._action_queue.clear()
+
+    def _action_input(self, memory: Tensor, current: Tensor | None = None) -> Tensor:
+        if self.config.current_obs_frames == 0:
+            return memory
+        if current is None:
+            raise ValueError("current observation features are required by this checkpoint")
+        return torch.cat([memory, current], dim=-1)
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict | None]:
         """訓練：對整段序列做 BPTT，回傳 masked MSE loss。"""
-        feats = self._encode_observation(batch)          # [B, L, input]
-        out, _ = self.lstm(feats)                          # [B, L, hidden]
-        pred = self.action_head(out)                       # [B, L, action_dim]
-        target = batch[ACTION]                             # [B, L, action_dim]
+        feats = self._encode_observation(batch)            # [B, Q, input]
+        memory_positions = torch.as_tensor(
+            self.config.memory_observation_positions, device=feats.device
+        )
+        memory_feats = feats.index_select(1, memory_positions)  # [B, L, input]
+        out, _ = self.lstm(memory_feats)                    # [B, L, hidden]
 
-        per_step = F.mse_loss(pred, target, reduction="none").mean(dim=-1)  # [B, L]
+        current = None
+        if self.config.current_obs_frames > 0:
+            positions = torch.as_tensor(
+                self.config.current_observation_positions, device=feats.device
+            )
+            current = feats[:, positions, :].flatten(start_dim=2)  # [B, L, N*input]
+        batch_size, sequence_length = out.shape[:2]
+        action_dim = self.config.action_feature.shape[0]
+        pred = self.action_head(self._action_input(out, current)).reshape(
+            batch_size, sequence_length, self.config.action_horizon, action_dim
+        )
+        target = batch[ACTION].reshape(
+            batch_size, sequence_length, self.config.action_horizon, action_dim
+        )
+
+        per_action = F.mse_loss(pred, target, reduction="none").mean(dim=-1)  # [B, L, H]
         pad_key = f"{ACTION}_is_pad"
         if pad_key in batch:
-            valid = (~batch[pad_key]).float()              # [B, L]，padding 幀不算 loss
-            loss = (per_step * valid).sum() / valid.sum().clamp(min=1.0)
+            valid = (~batch[pad_key]).reshape(
+                batch_size, sequence_length, self.config.action_horizon
+            ).float()
+            loss = (per_action * valid).sum() / valid.sum().clamp(min=1.0)
         else:
-            loss = per_step.mean()
+            loss = per_action.mean()
         return loss, {"mse_loss": loss.item()}
 
-    @torch.no_grad()
-    def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
-        """抽象介面要求；recurrent policy 逐步輸出，這裡回傳單一動作（加 chunk 維）。"""
-        return self.select_action(batch, **kwargs).unsqueeze(1)
-
-    def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
-        """推論：餵單一幀，依 obs_stride 決定是否更新 hidden state。
-
-        stride=1（預設）：每次都處理。
-        stride=N>1：每 N 次呼叫才真正 encode+LSTM forward（更新記憶、算新動作），
-        其餘次直接回傳上一次的動作。這讓 eval 端不用改——照常每幀呼叫 policy，
-        但 policy 按 stride 節奏處理，跟訓練的 observation_delta_indices 一致。
-        """
+    def _step_observation(self, batch: dict[str, Tensor]) -> tuple[Tensor, Tensor | None]:
+        """Consume one frame, update recurrent memory on stride, and return action features."""
         should_process = (self._stride_counter % self._stride == 0)
         self._stride_counter += 1
 
-        if should_process or self._cached_action is None:
-            feat = self._encode_observation(batch)             # [B, 1, input]
-            out, self._lstm_state = self.lstm(feat, self._lstm_state)
-            self._cached_action = self.action_head(out[:, -1]) # [B, action_dim]
+        feat = self._encode_observation(batch)             # [B, 1, input]
+        out, next_state = self.lstm(feat, self._lstm_state)
+        if should_process or self._lstm_state is None:
+            self._lstm_state = next_state
 
-        return self._cached_action
+        current = None
+        if self.config.current_obs_frames > 0:
+            feature = feat[:, -1]
+            self._current_features.append(feature)
+            while len(self._current_features) < self.config.current_obs_frames:
+                self._current_features.appendleft(feature)
+            current = torch.cat(list(self._current_features), dim=-1)
+        return out[:, -1], current
+
+    def _make_action_chunk(self, memory: Tensor, current: Tensor | None) -> Tensor:
+        batch_size = memory.shape[0]
+        action_dim = self.config.action_feature.shape[0]
+        return self.action_head(self._action_input(memory, current)).reshape(
+            batch_size, self.config.action_horizon, action_dim
+        )
+
+    @torch.no_grad()
+    def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
+        """Consume the current frame and predict a fresh [B, H, action_dim] chunk."""
+        self._action_queue.clear()
+        memory, current = self._step_observation(batch)
+        return self._make_action_chunk(memory, current)
+
+    @torch.no_grad()
+    def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
+        """Consume every observation, but replan actions only when the chunk queue is empty."""
+        memory, current = self._step_observation(batch)
+        if not self._action_queue:
+            chunk = self._make_action_chunk(memory, current)
+            self._action_queue.extend(chunk.unbind(dim=1))
+        return self._action_queue.popleft()

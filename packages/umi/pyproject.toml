@@ -17,11 +17,11 @@ requires-python = ">=3.10"
 
 dependencies = [
     # Core dependencies
-    "click>=8.2.1",
+    "click>=8.1.7,<9",
     "matplotlib>=3.7",
-    "numpy>=2.0,<3",
+    "numpy>=1.26,<3",
     "opencv-contrib-python",
-    "pyyaml==6.0",
+    "pyyaml>=6.0,<7",
     "tqdm",
     "zarr>=2.16",
     "numcodecs==0.11",
@@ -49,7 +49,7 @@ dependencies = [
     "pandas>=2.2.2",
     "scikit-fda",
 
-    "lerobot==0.4.4"
+    "lerobot==0.4.2"
 ]
 
 [project.urls]

@@ -15,7 +15,7 @@
 
 用法（容器內）：
     cd /workspace/aicapstone
-    python LSTM/scripts/decode_dataset_to_images.py \
+    python policies/lstm/scripts/decode_dataset_to_images.py \
         --src-repo johnnyli1220/shellbench-num_shuffles-3 \
         --src-root /root/.cache/huggingface/lerobot/johnnyli1220/shellbench-num_shuffles-3 \
         --dst-root /workspace/aicapstone/data/lerobot_img/johnnyli1220/shellbench-num_shuffles-3
@@ -23,6 +23,10 @@
 
 import argparse
 import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
+import policies.lstm.scripts.setup_cache  # noqa: F401,E402
 
 import numpy as np
 import torch
@@ -73,7 +77,14 @@ dst = LeRobotDataset.create(
     robot_type=src.meta.robot_type,
     use_videos=False,
 )
-dst.start_image_writer(num_processes=0, num_threads=args.writer_threads)  # 平行寫 PNG
+# WORKAROUND: lerobot's save_episode() calls clear_episode_buffer(delete_images=True)
+# which deletes the images we just wrote (designed for video encoding workflow).
+# Patch it to never delete images since they ARE the final output.
+_original_clear = dst.clear_episode_buffer.__func__
+def _clear_keep_images(self, delete_images=True):
+    _original_clear(self, delete_images=False)
+import types
+dst.clear_episode_buffer = types.MethodType(_clear_keep_images, dst)
 
 image_keys = [k for k in src.meta.features if k.startswith("observation.images.")]
 data_keys = [k for k in src.meta.features if k not in DEFAULT_FEATURES and k not in image_keys]
@@ -121,7 +132,6 @@ for ep in range(n_eps):
     dst.save_episode()
     print(f"  episode {ep + 1}/{n_eps} done ({length} frames)", flush=True)
 
-dst.stop_image_writer()
 dst.finalize()  # 必要：把緩衝的 episode metadata 寫進 parquet，否則 dataset 無效
 
 print(f"\n✅ 轉檔完成 → {dst_root}")

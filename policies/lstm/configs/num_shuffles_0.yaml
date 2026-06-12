@@ -1,0 +1,63 @@
+# LSTM Policy Training Config (default)
+# Usage:
+#   python policies/lstm/scripts/train_lstm.py --config policies/lstm/configs/default.yaml
+#   python policies/lstm/scripts/train_lstm.py --config policies/lstm/configs/default.yaml --steps=50000  # CLI overrides YAML
+
+# ── Dataset ──────────────────────────────────────────────────────────────────
+dataset:
+  repo_id: johnnyli1220/shellbench-num_shuffles-0
+  root: data/lerobot_img/johnnyli1220/shellbench-num_shuffles-0
+  video_backend: pyav
+
+# ── Policy (LSTM) ────────────────────────────────────────────────────────────
+policy:
+  type: lstm
+
+  # Image encoder
+  vision_backbone: resnet18
+  pretrained_backbone_weights: IMAGENET1K_V1
+  image_size: 128            # resize edge length; 128 saves VRAM, 96 is minimum
+
+  # LSTM architecture
+  hidden_size: 512
+  num_lstm_layers: 2
+  state_feature_dim: 128     # proprioception MLP output dim
+  dropout: 0.1
+
+  # Sequence sampling (BPTT window)
+  seq_len: 230               # 230 with stride 3 covers 688 frames, enough for full episodes
+  obs_stride: 3              # train samples every 3rd frame; eval policy applies same stride internally
+  current_obs_frames: 0       # action head directly sees current frame; 2 adds previous frame
+  action_horizon: 8           # number of future actions predicted per planning step
+
+  # Memory saving
+  use_gradient_checkpointing: true
+
+  # Optimizer
+  optimizer_lr: 1.0e-4
+  backbone_lr: 1.0e-4
+  optimizer_weight_decay: 1.0e-4
+  scheduler_warmup_steps: 5000
+  scheduler_decay_steps: 100000
+  scheduler_decay_lr: 1.0e-5
+
+  # Hub
+  push_to_hub: false
+
+# ── Training ─────────────────────────────────────────────────────────────────
+batch_size: 1
+steps: 120000
+seed: 1000
+num_workers: 4
+save_freq: 5000
+log_freq: 100
+save_checkpoint: true
+
+# ── Output ───────────────────────────────────────────────────────────────────
+output_dir: outputs/lstm/num_shuffles-0
+job_name: lstm_ns0
+
+# ── W&B ──────────────────────────────────────────────────────────────────────
+wandb:
+  enable: false
+  project: shellbench-lstm

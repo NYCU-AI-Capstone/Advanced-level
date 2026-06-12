@@ -4,8 +4,8 @@
 
 不需要 Isaac Sim。用法：
     cd /workspace/aicapstone
-    python LSTM/scripts/diagnose_rollout.py \
-        --ckpt LSTM/outputs/ns0_v1c/checkpoints/001000/pretrained_model \
+    python policies/lstm/scripts/diagnose_rollout.py \
+        --ckpt outputs/lstm/ns0_v1c/checkpoints/001000/pretrained_model \
         --repo johnnyli1220/shellbench-num_shuffles-0
 """
 
@@ -13,23 +13,52 @@ import argparse
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT))
 
 import torch  # noqa: E402
 
-import LSTM.policy.register  # noqa: F401,E402
+import policies.lstm.policy.register  # noqa: F401,E402
 from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: E402
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors  # noqa: E402
 from lerobot.utils.constants import ACTION, OBS_STATE  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ckpt", required=True)
-ap.add_argument("--repo", required=True)
+ap.add_argument(
+    "--repo",
+    default=None,
+    help="LeRobot repo id. Optional when --root ends with <owner>/<dataset>.",
+)
+ap.add_argument(
+    "--root",
+    type=pathlib.Path,
+    default=None,
+    help="Dataset directory. Defaults to data/lerobot_img/<repo> under the repo root.",
+)
 ap.add_argument("--episode", type=int, default=0)
 args = ap.parse_args()
 
-root = f"/root/.cache/huggingface/lerobot/{args.repo}"
-ds = LeRobotDataset(args.repo, root=root, video_backend="pyav")
+if args.repo is None and args.root is None:
+    ap.error("one of --repo or --root is required")
+
+root = args.root or REPO_ROOT / "data" / "lerobot_img" / args.repo
+root = root.expanduser().resolve()
+if not root.is_dir():
+    raise FileNotFoundError(
+        f"Dataset directory not found: {root}. "
+        "Pass the local dataset path with --root if it is stored elsewhere."
+    )
+
+repo_id = args.repo
+if repo_id is None:
+    if len(root.parts) < 2:
+        ap.error("cannot infer repo id from --root; pass --repo explicitly")
+    repo_id = f"{root.parent.name}/{root.name}"
+
+print(f"dataset repo: {repo_id}")
+print(f"dataset root: {root}")
+ds = LeRobotDataset(repo_id, root=root, video_backend="pyav")
 
 # 取出指定 episode 的 frame index 範圍（依序）
 ep_meta = ds.meta.episodes[args.episode]

@@ -6,7 +6,7 @@
 >
 > 定位來源：`documents/training_policy_survey.md` §6.1 #2（Robomimic BC-RNN / LSTM-GMM 風格）。
 
-本文件是「動手寫 code 前的藍圖」。實際程式碼會放在 `Advanced-level/LSTM/` 底下。
+本文件是「動手寫 code 前的藍圖」。實際程式碼會放在 `Advanced-level/policies/lstm/` 底下。
 
 ---
 
@@ -133,17 +133,17 @@ ShellBench 的 env / datagen / eval / sweep 都已完成。LSTM 只需「插進�
 （跑使用者自訂指令模板）。→ 乾淨的做法：
 
 ```
-LSTM/scripts/train_lstm.py   # thin wrapper:
+policies/lstm/scripts/train_lstm.py   # thin wrapper:
                              #   1. import 我們的 LSTM policy（觸發註冊）
                              #   2. 呼叫 lerobot 的 train main（或 subprocess lerobot-train）
 ```
 
-然後在 LSTM 的 sweep config 設 `training.backend: command`、`training.command: "<python> LSTM/scripts/train_lstm.py ..."`。
+然後在 LSTM 的 sweep config 設 `training.backend: command`、`training.command: "<python> policies/lstm/scripts/train_lstm.py ..."`。
 **完全不用 fork lerobot。**
 
 ### 4.3 Sweep config
 複製既有 `configs/experiments/exp1_shuffle_scaling/sweep.yaml` 的形式，
-在 `LSTM/configs/` 放 LSTM 專用 sweep（`policy.type: lstm`、`training.backend: command` 等）。
+在 `policies/lstm/configs/` 放 LSTM 專用 sweep（`policy.type: lstm`、`training.backend: command` 等）。
 Dataset 與既有 ACT/DP **共用同一份**（同 `repo_id`），只換 policy，比較成本低。
 
 ---
@@ -164,14 +164,14 @@ Dataset 與既有 ACT/DP **共用同一份**（同 `repo_id`），只換 policy�
   `make_policy()`（→ `get_policy_class(cfg.type)`）→ `make_pre_post_processors()` →
   迴圈內 `loss, out = policy.forward(batch)`。
 
-**→ 整合策略（不 fork lerobot）：** 寫一個 `LSTM/scripts/train_lstm.py` wrapper：
+**→ 整合策略（不 fork lerobot）：** 寫一個 `policies/lstm/scripts/train_lstm.py` wrapper：
 1. `import` 我們的 LSTM 模組（觸發 `register_subclass`，讓 `--policy.type=lstm` 可解析）
 2. **monkeypatch** `lerobot.policies.factory.get_policy_class` 與 `make_pre_post_processors`，
    讓它們在遇到 lstm / 我們的 config 時回傳我們的 class / processor
 3. 呼叫 `lerobot.scripts.lerobot_train.main()`
 
 eval 端（`eval_shell_game.py`）同理：它也用 `get_policy_class`，所以 eval 也要先 import 我們的模組
-並套同樣的 patch（可包成一個 `LSTM/policy/register.py`，import 即完成註冊 + patch）。
+並套同樣的 patch（可包成一個 `policies/lstm/policy/register.py`，import 即完成註冊 + patch）。
 
 **BPTT 序列取樣 = config 的 delta_indices（重要，省掉客製 dataset）：**
 lerobot 用 config 的 `observation_delta_indices` / `action_delta_indices`（回傳相對幀索引 list）
@@ -217,7 +217,7 @@ Phase 4 —（選做）對齊 Robomimic：升級 GMM head / 調 LSTM 層數
 ## 7. 第一版預定檔案
 
 ```
-Advanced-level/LSTM/
+Advanced-level/policies/lstm/
 ├── docs/
 │   └── implementation_plan.md        # 本文件
 ├── policy/

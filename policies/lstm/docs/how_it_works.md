@@ -25,10 +25,10 @@ ShellBench 是「猜杯子」：球藏在哪只在開頭 (Reveal) 看得到，�
 
 ---
 
-## 檔案地圖（`LSTM/policy/`）
+## 檔案地圖（`policies/lstm/policy/`）
 
 ```
-LSTM/policy/
+policies/lstm/policy/
 ├── configuration_lstm.py   ← 超參數 + 「要取哪幾幀來訓練」
 ├── modeling_lstm.py        ← 模型本體（ResNet18 + LSTM + 動作輸出）
 ├── processor_lstm.py       ← 影像/數值的正規化前後處理
@@ -89,7 +89,7 @@ LeRobot 內建 policy（act/diffusion/...）是**寫死在程式裡**的清單�
 
 2. **訓練序列用「跳幀涵蓋整段」**。
    episode 有 500+ 幀，全部硬塞 GPU 會爆。用 `seq_len`(L) + `obs_stride` 控制要取幾幀、隔多遠。
-   ⚠️ 第一版 `obs_stride=1`（每幀都取）；若改成跳幀，**評估端也要同樣跳幀**，否則訓練/評估的時間節奏不一致。
+   目前預設 `obs_stride=8`：訓練每 8 幀取一次；評估端仍每幀呼叫 policy，但 LSTM policy 內部每 8 幀才更新 hidden state、其餘幀回傳上一次 action，讓 train/eval 時間節奏一致。
 
 3. **評估時 hidden state 跨整段 episode 攜帶**。
    `select_action` 每被呼叫一次就更新一次記憶；`reset()` 在每個 episode 開頭清空。
@@ -105,7 +105,7 @@ LeRobot 內建 policy（act/diffusion/...）是**寫死在程式裡**的清單�
 
 ```bash
 cd /workspace/aicapstone
-python LSTM/scripts/smoke_test.py
+python policies/lstm/scripts/smoke_test.py
 ```
 
 會驗證三件事（不需 dataset / GPU）：①lerobot 認得 `--policy.type=lstm` ②訓練 forward+BPTT 跑得動
@@ -115,9 +115,9 @@ python LSTM/scripts/smoke_test.py
 
 - ✅ plugin 五個檔案（config / model / processor / register / init）
 - ✅ 容器內 smoke test 通過（註冊 + 訓練 BPTT + 推論記憶攜帶）
-- ⬜ 訓練 wrapper（`LSTM/scripts/train_lstm.py`）：先 import register 再呼叫 lerobot-train
-- ⬜ 評估 wrapper（`LSTM/scripts/eval_lstm.py`）：先 import register 再跑 eval_shell_game
-- ⬜ sweep config（`LSTM/configs/`）：第一版固定 num_shuffles=0 打通
+- ⬜ 訓練 wrapper（`policies/lstm/scripts/train_lstm.py`）：先 import register 再呼叫 lerobot-train
+- ⬜ 評估 wrapper（`policies/lstm/scripts/eval_lstm.py`）：先 import register 再跑 eval_shell_game
+- ⬜ sweep config（`policies/lstm/configs/`）：第一版固定 num_shuffles=0 打通
 - ⬜ 在容器內實際訓練 + 評估，確認 DSR > 1/3
 
 > 還沒實際在容器裡 import 跑過（host 沒裝 lerobot）。下一步就是寫 wrapper、進容器跑通 num_shuffles=0。

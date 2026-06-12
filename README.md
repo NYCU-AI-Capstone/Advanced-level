@@ -1,167 +1,322 @@
-# AI Capstone
+# ShellBench
 
-Sim-to-real imitation-learning pipeline for robot manipulation tasks. Record human demonstrations with UMI, process them through SLAM, generate synthetic data in Isaac Lab, train a diffusion policy with LeRobot, and evaluate it in simulation.
+A parametric shell game benchmark for evaluating memory-aware visuomotor policies, built on NVIDIA Isaac Sim and LeRobot.
 
-> **Platform:** Linux only.
+Existing visuomotor policies (Diffusion Policy, ACT, etc.) rely on short observation windows and lack long-term memory. The shell game is inherently **non-Markovian** — once the ball is covered, all cups look identical, and the policy must remember where the ball was. ShellBench provides a simulation-based, reproducible, difficulty-controllable test platform for quantifying any manipulation policy's memory capacity.
 
-For a complete step-by-step walkthrough, see [Getting Started](docs/getting_started.md).
+> **Platform:** Linux only. Requires NVIDIA GPU.
 
-# Human Demonstration Data Processing
+## Task
 
-1. **Installation**
+The task has four phases. Phases 1–3 are scripted by the environment; Phase 4 is controlled by the policy:
+
+| Phase | Name | Description |
+|-------|------|-------------|
+| 1 | **Reveal** | Ball appears next to a cup; camera observes for several frames |
+| 2 | **Cover** | Cup covers the ball; ball disappears from view |
+| 3 | **Shuffle** | Cups swap positions N times |
+| 4 | **Act** | Robot lifts a cup (policy-controlled) |
+
+### Difficulty Parameters
+
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| `num_cups` | 3–5 | Number of cups |
+| `num_shuffles` | 0–5+ | Number of pairwise swaps |
+| `shuffle_speed` | 0.5–2.0 | Speed of cup swaps |
+
+### Metrics
+
+| Metric | Definition |
+|--------|------------|
+| **DSR** (Decision Success Rate) | Fraction of episodes where the correct cup was selected |
+| **MSR** (Manipulation Success Rate) | Fraction of episodes where any cup was successfully lifted |
+| **SR** (Success Rate) | Fraction of episodes with correct selection AND successful lift |
+| **kappa** (Cohen's Kappa) | Chance-corrected DSR: `(DSR - 1/num_cups) / (1 - 1/num_cups)` |
+
+## Directory Structure
+
+```
+Advanced-level/
+├── packages/
+│   ├── umi/                   # UMI data processing pipeline
+│   └── simulator/             # Isaac Lab task definitions (Docker)
+├── policies/
+│   ├── diffusion/             # Diffusion Policy eval wrapper
+│   └── lstm/                  # LSTM Policy (custom LeRobot plugin)
+├── scripts/                   # Data generation, evaluation, sweep runner
+├── configs/                   # Sweep experiment configs (base + experiments/)
+├── outputs/                   # Training & eval results (gitignored)
+├── docs/                      # Documentation
+│   └── shellbench/            # ShellBench design docs & usage guide
+├── tests/                     # Tests
+├── data/                      # Data storage (gitignored)
+├── Dockerfile / Makefile      # Isaac Sim Docker environment
+└── pyproject.toml             # uv workspace root
+```
+
+## Setup
+
+### Host (Training)
+
+```bash
+uv sync
+source .venv/bin/activate
+export HF_USER=<your-huggingface-username>
+hf auth login
+```
+
+### Docker (Simulation / Data Generation / Evaluation)
+
+```bash
+make launch-isaaclab       # build & enter Isaac Sim container
+```
+
+Inside the container, the repo is mounted at `/workspace/aicapstone`.
+
+## Data Generation
+
+ShellBench uses a dedicated script with FSM-based demonstration generation (not the UMI pipeline).
+
+### Generate LeRobot Dataset
+
+```bash
+python scripts/datagen/generate_shell_game.py \
+  --task HCIS-ShellGame-SingleArm-v0 \
+  --num_envs 1 \
+  --device cuda \
+  --enable_cameras \
+  --record \
+  --use_lerobot_recorder \
+  --lerobot_dataset_repo_id "${HF_USER}/shellbench-demo" \
+  --dataset_file ./datasets/shell_game.hdf5 \
+  --num_demos 100 \
+  --num_cups 3 \
+  --num_shuffles 2 \
+  --seed 42
+```
+
+Upload to HF Hub:
+
+```bash
+hf upload ${HF_USER}/shellbench-demo \
+  .cache/huggingface/lerobot/${HF_USER}/shellbench-demo/
+```
+
+### Generate HDF5 Only (No LeRobot Format)
+
+```bash
+python scripts/datagen/generate_shell_game.py \
+  --task HCIS-ShellGame-SingleArm-v0 \
+  --num_envs 1 \
+  --device cuda \
+  --enable_cameras \
+  --record \
+  --dataset_file ./datasets/shell_game_3cups_2shuffles.hdf5 \
+  --num_demos 100 \
+  --num_cups 3 \
+  --num_shuffles 2 \
+  --seed 42
+```
+
+## Training
+
+### Diffusion Policy
+
+Diffusion Policy uses LeRobot's built-in `lerobot-train` command directly on the host machine:
+
+```bash
+lerobot-train \
+  --dataset.repo_id=${HF_USER}/shellbench-demo \
+  --policy.type=diffusion \
+  --output_dir=outputs/diffusion/shellbench-num_shuffles-2 \
+  --job_name=shellbench_diffusion \
+  --policy.device=cuda \
+  --wandb.enable=true \
+  --training.num_epochs=100
+```
+
+See [docs/lerobot_training.md](docs/lerobot_training.md) for full flag reference, multi-GPU setup, and troubleshooting.
+
+### LSTM Policy
+
+LSTM Policy is a custom LeRobot plugin with recurrent memory. Training uses a wrapper script that registers the plugin then calls `lerobot-train`:
+
+```bash
+python policies/lstm/scripts/train_lstm.py \
+  --config policies/lstm/configs/default.yaml
+```
+
+Available configs in `policies/lstm/configs/`: `default.yaml`, `num_cups_4.yaml`, `num_cups_5.yaml`, `num_shuffles_0.yaml` through `num_shuffles_5.yaml`, `shuffle_speed_0.5.yaml`, `shuffle_speed_1.5.yaml`, `shuffle_speed_2.0.yaml`.
+
+Resume from a checkpoint:
+
+```bash
+python policies/lstm/scripts/train_lstm.py \
+  --config outputs/lstm/num_shuffles-3/checkpoints/075000/pretrained_model/train_config.json \
+  --resume=true
+```
+
+#### Dataset Preparation for LSTM
+
+1. Download the dataset from HF Hub:
 
    ```bash
-   uv sync --package umi
+   python -c "
+   from huggingface_hub import snapshot_download
+   snapshot_download('johnnyli1220/shellbench-num_shuffles-3',
+                     repo_type='dataset',
+                     local_dir='.cache/huggingface/lerobot/johnnyli1220/shellbench-num_shuffles-3')
+   "
    ```
 
-2. **Activate the virtual environment**
+2. (Recommended) Decode video to images for faster training:
 
    ```bash
-   source .venv/bin/activate
+   python policies/lstm/scripts/decode_dataset_to_images.py \
+     --src-repo johnnyli1220/shellbench-num_shuffles-3 \
+     --src-root .cache/huggingface/lerobot/johnnyli1220/shellbench-num_shuffles-3 \
+     --dst-root data/lerobot_img/johnnyli1220/shellbench-num_shuffles-3 \
+     --resize 128
    ```
 
-   This makes `hf`, `lerobot-train`, and other installed commands available in your terminal.
+See [policies/lstm/docs/running.md](policies/lstm/docs/running.md) for OOM troubleshooting and tunable hyperparameters.
 
-3. **Hugging Face login**
+## Evaluation
 
-   Create an access token at: <https://huggingface.co/docs/hub/en/security-tokens>
-
-   Then log in:
-
-   ```bash
-   hf auth login --token <YOUR_HF_TOKEN>
-   ```
-
-4. **Set your Hugging Face username**
-
-   Commands throughout this project use `${HF_USER}`. Set it once per terminal session:
-
-   ```bash
-   export HF_USER=<your-huggingface-username>
-   ```
-
-## After recording the demonstration videos, follow this practice
-
-1. Under `data/`, create a directory for this demo. Suggested name: `YYYYMMDD-taskname`. Add a `raw_videos/` subdirectory under it.
-2. Place the recorded videos in `data/YYYYMMDD-taskname/raw_videos/`.
-
-## Verify the recorded demonstration videos
-
-The SLAM mapping stage is fragile. To save time, run the verify pipeline first:
+### Diffusion Policy
 
 ```bash
-uv run umi run-slam-pipeline umi_pipeline_configs/verify_pipeline.yaml \
-    --session-dir <demo_directory_name>
+python policies/diffusion/scripts/eval_diffusion.py \
+  --run_dir outputs/diffusion/shellbench-num_shuffles-3 \
+  --num_episodes 100 \
+  --seed 529
 ```
 
-## If verification fails, re-record and copy into the demo directory
+The wrapper auto-selects the best checkpoint, reads training config, and infers task parameters from the run directory name.
 
-There are several failure modes:
-
-### SLAM failures
-
-Pipeline raises:
-
-```
-RuntimeError: SLAM mapping failed. Check logs at datasets/team_asia/demos/mapping/slam_stdout.txt for details.
-```
-
-Re-record the mapping video, replace the file, and re-run the verification pipeline.
-
-## If verification succeeds, run the full pipeline
+Evaluate a specific checkpoint step:
 
 ```bash
-uv run umi run-slam-pipeline umi_pipeline_configs/build_dataset.yaml \
-    --session-dir <demo_directory_name> \
-    --task <kitchen|dining_room|living_room>
+python policies/diffusion/scripts/eval_diffusion.py \
+  --run_dir outputs/diffusion/shellbench-num_shuffles-0 \
+  --checkpoint_step 60000 \
+  --num_episodes 100
 ```
 
-Upload the whole session directory to the Hugging Face Hub:
+### LSTM Policy
 
 ```bash
-hf upload ${HF_USER}/<repo_id> data/<demo_directory_name>/demos/mapping/object_poses.json
+python policies/lstm/scripts/eval_lstm.py \
+  --run_dir outputs/lstm/num_shuffles-3 \
+  --num_episodes 100
 ```
 
-# Data Creation in Simulator
+### Oracle (Upper Bound)
 
-## Prerequisites
-
-1. **Linux machine with Nvidia GPU** — verify with `nvidia-smi`. Isaac Lab requires a Linux host with an Nvidia driver.
-2. **Docker installed** — the simulator runs inside a container.
-3. **Repository cloned** — if you haven't already:
-   ```bash
-   git clone https://github.com/HCIS-Lab/aicapstone.git
-   cd aicapstone
-   ```
-
-## Launch Isaac Lab
+Oracle uses a scripted FSM that knows the ground truth — useful for measuring manipulation difficulty:
 
 ```bash
-make launch-isaaclab
+python scripts/eval_shell_game.py \
+  --task HCIS-ShellGame-SingleArm-v0 \
+  --device cuda \
+  --enable_cameras \
+  --policy_backend oracle \
+  --num_episodes 50 \
+  --num_cups 3 \
+  --num_shuffles 2 \
+  --output_json ./results/oracle/metrics.json
 ```
 
-This builds the Isaac Sim container. On success, the shell drops you inside the container.
-
-Download the session directory produced by the UMI pipeline:
+### Manual Evaluation (Any Policy)
 
 ```bash
-hf download ${HF_USER}/<repo_id> --local-dir data/<demo_directory_name>
+python scripts/eval_shell_game.py \
+  --task HCIS-ShellGame-SingleArm-v0 \
+  --device cuda \
+  --enable_cameras \
+  --policy_backend lerobot \
+  --policy_type lerobot-diffusion \
+  --policy_checkpoint_path ./outputs/diffusion/shellbench-num_shuffles-2/checkpoints/pretrained_model \
+  --policy_action_horizon 16 \
+  --num_episodes 50 \
+  --num_cups 3 \
+  --num_shuffles 2 \
+  --seed 42 \
+  --output_json ./results/eval_metrics.json
 ```
 
-## Run the data generation pipeline
+## Sweep Experiments
 
-The `--lerobot_dataset_repo_id` should be your own Hugging Face dataset repo.
-
-Available tasks:
-
-- `HCIS-CupStacking-SingleArm-v0`
-- `HCIS-CutleryArrangement-SingleArm-v0`
-- `HCIS-ToyBlocksCollection-SingleArm-v0`
+`scripts/run_sweep.py` reads a base config and a sweep config, expands all parameter combinations, and runs datagen → training → evaluation for each variant.
 
 ```bash
-python scripts/datagen/generate.py \
-    --task HCIS-CupStacking-SingleArm-v0 \
-    --num_envs 1 \
-    --device cuda \
-    --enable_cameras \
-    --record \
-    --use_lerobot_recorder \
-    --lerobot_dataset_repo_id ${HF_USER}/<repo_id> \
-    --object_poses data/<demo_directory_name>/object_poses.json
+python scripts/run_sweep.py \
+  --base configs/base.yaml \
+  --sweep configs/experiments/exp1_shuffle_scaling/sweep.yaml \
+  --output_dir results/exp1_shuffle_scaling
 ```
 
-Upload the recorded dataset to Hugging Face Hub:
+### Predefined Experiments
 
 ```bash
-hf upload ${HF_USER}/<repo_id> ~/.cache/huggingface/lerobot/${HF_USER}/<repo_id>/
+# Exp 1: Fix 3 cups, sweep num_shuffles = 0..5
+python scripts/run_sweep.py \
+  --base configs/base.yaml \
+  --sweep configs/experiments/exp1_shuffle_scaling/sweep.yaml
+
+# Exp 2: Fix 2 shuffles, sweep num_cups = 3,4,5
+python scripts/run_sweep.py \
+  --base configs/base.yaml \
+  --sweep configs/experiments/exp2_num_cups/sweep.yaml
+
+# Exp 3: Fix difficulty, sweep observation_horizon = 2,8,16,32
+python scripts/run_sweep.py \
+  --base configs/base.yaml \
+  --sweep configs/experiments/exp3_obs_horizon/sweep.yaml
+
+# Exp 4: Oracle upper bound (no training)
+python scripts/run_sweep.py \
+  --base configs/base.yaml \
+  --sweep configs/experiments/exp4_oracle/sweep.yaml
 ```
 
-# LeRobot Training
+### Skip Steps
 
-Training runs on the **host machine** (not inside Docker) and produces a policy checkpoint from your generated dataset. Requires an Nvidia GPU.
+```bash
+# Eval only (use existing checkpoints)
+python scripts/run_sweep.py \
+  --base configs/base.yaml \
+  --sweep configs/experiments/exp1_shuffle_scaling/sweep.yaml \
+  --skip_datagen --skip_training
 
-See [LeRobot Training Procedure](docs/lerobot_training.md) for the full command reference, multi-GPU setup, and troubleshooting.
+# Datagen only
+python scripts/run_sweep.py \
+  --base configs/base.yaml \
+  --sweep configs/experiments/exp1_shuffle_scaling/sweep.yaml \
+  --skip_training --skip_eval
+```
 
-# LeRobot Rollout
+## LSTM Smoke Test
 
-Rollout loads your trained policy into the Isaac Lab simulator (inside the Docker container) to evaluate robot performance.
+Verify the LSTM plugin is correctly installed (registration, BPTT training, inference with memory carry, save/load):
 
-See [LeRobot Rollout (Policy Evaluation)](docs/lerobot_rollout.md) for the full procedure.
+```bash
+python policies/lstm/scripts/smoke_test.py
+```
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [Getting Started](docs/getting_started.md) | End-to-end pipeline walkthrough |
-| [Developer Introduction](docs/dev/introduction.md) | Repo layout, environment setup, where to run what |
-| [Isaac Lab + LeIsaac Configuration Tutorial](docs/isaaclab_leisaac_tutorial.md) | Configuring Isaac Lab with LeIsaac |
-| [LeRobot Dataset Visualizer](docs/lerobot_dataset_visualizer.md) | Visualizing LeRobot datasets |
-| [LeRobot Checkpoint Format](docs/lerobot_model_format.md) | Understanding LeRobot model checkpoint structure |
-| [LeRobot Rollout (Policy Evaluation)](docs/lerobot_rollout.md) | Running trained policies in the simulator |
-| [LeRobot Training Procedure](docs/lerobot_training.md) | Training imitation-learning policies |
-| [Standalone Env Config Export](docs/standalone_env_config_export.md) | Exporting environment configs as standalone files |
-| [Synthetic Data Generation Pipeline](docs/synthetic_data_generation.md) | Generating synthetic training data |
-| [UMI Pipeline](docs/umi_pipeline.md) | Data collection and processing with UMI |
+| [ShellBench Task Description](docs/shellbench/task_description.md) | Task definition and experiment design |
+| [ShellBench Usage Guide](docs/shellbench/USAGE.md) | Detailed usage: datagen, training, evaluation, sweep configs |
+| [Codebase Overview](docs/shellbench/codebase_overview.md) | Full directory structure and module descriptions |
+| [LeRobot Training](docs/lerobot_training.md) | Diffusion Policy training procedure |
+| [LSTM Policy — How It Works](policies/lstm/docs/how_it_works.md) | LSTM architecture and integration design |
+| [LSTM Policy — Running](policies/lstm/docs/running.md) | LSTM training/eval commands and troubleshooting |
+| [Getting Started](docs/getting_started.md) | End-to-end pipeline walkthrough (UMI → datagen → training → eval) |
+| [LeRobot Rollout](docs/lerobot_rollout.md) | General policy evaluation in simulator |
 
 ## License
 

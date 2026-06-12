@@ -13,7 +13,7 @@
 
 ```bash
 cd /workspace/aicapstone
-python LSTM/scripts/smoke_test.py        # 看到 ✅ ALL SMOKE TESTS PASSED 即可
+python policies/lstm/scripts/smoke_test.py        # 看到 ✅ ALL SMOKE TESTS PASSED 即可
 ```
 
 ---
@@ -32,7 +32,24 @@ python LSTM/scripts/smoke_test.py        # 看到 ✅ ALL SMOKE TESTS PASSED 即
    PY
    ```
    一勞永逸版：請 dataset 擁有者（johnnyli1220）幫每個 repo 打 `v3.0` tag，之後就能直接線上抓。
+```
+python -c "
+from huggingface_hub import snapshot_download
+snapshot_download('johnnyli1220/shellbench-num_shuffles-0',
+                  repo_type='dataset',
+                  local_dir='/home/youzhe0305/.cache/huggingface/lerobot/johnnyli1220/shellbench-num_shuffles-0')
+" 
+```
+
+
 2. **影片解碼後端** → 一定要加 `--dataset.video_backend=pyav`（容器缺 FFmpeg，torchcodec 載不起來）。
+
+```
+python policies/lstm/scripts/decode_dataset_to_images.py \
+  --src-repo johnnyli1220/shellbench-num_shuffles-0 \
+  --src-root /home/youzhe0305/.cache/huggingface/lerobot/johnnyli1220/shellbench-num_shuffles-0 \
+  --dst-root data/lerobot_img/johnnyli1220/shellbench-num_shuffles-0
+```
 
 ## 1. 訓練（先用最簡單難度 num_shuffles=0 打通）
 
@@ -40,13 +57,13 @@ dataset 準備好後（見 §0.5），跑：
 
 ```bash
 cd /workspace/aicapstone
-python LSTM/scripts/train_lstm.py \
+python policies/lstm/scripts/train_lstm.py \
   --policy.type=lstm \
   --dataset.repo_id=johnnyli1220/shellbench-num_shuffles-0 \
   --dataset.video_backend=pyav \
   --policy.device=cuda \
-  --policy.seq_len=128 \
-  --policy.obs_stride=1 \
+  --policy.seq_len=96 \
+  --policy.obs_stride=8 \
   --policy.image_size=96 \
   --policy.push_to_hub=false \
   --batch_size=2 \
@@ -55,7 +72,7 @@ python LSTM/scripts/train_lstm.py \
   --save_freq=2500 \
   --log_freq=100 \
   --wandb.enable=false \
-  --output_dir=LSTM/outputs/ns0_v1 \
+  --output_dir=outputs/lstm/ns0_v1 \
   --job_name=lstm_ns0_v1
 ```
 
@@ -63,11 +80,11 @@ python LSTM/scripts/train_lstm.py \
 > torchcodec 解碼，但容器裡缺 FFmpeg 函式庫（`libtorchcodec` 載不起來）。PyAV 自帶 ffmpeg、
 > 容器已裝，切過去即可，不用裝任何東西。（評估端不受影響 —— 它的畫面來自 Isaac Sim 即時算，不解 dataset 影片。）
 
-訓練完，checkpoint 會在 `LSTM/outputs/ns0_v1/checkpoints/` 底下。
+訓練完，checkpoint 會在 `outputs/lstm/ns0_v1/checkpoints/` 底下。
 確認實際路徑（lerobot 會建一個 `last` 指向最後一個 step）：
 
 ```bash
-ls -R LSTM/outputs/ns0_v1/checkpoints/ | head
+ls -R outputs/lstm/ns0_v1/checkpoints/ | head
 # 預期看到 .../checkpoints/last/pretrained_model/（含 model.safetensors + config.json + 前後處理器）
 ```
 
@@ -75,8 +92,8 @@ ls -R LSTM/outputs/ns0_v1/checkpoints/ | head
 
 | flag | 預設 | 說明 |
 |------|------|------|
-| `--policy.seq_len` | 200 | 每個訓練樣本涵蓋幾幀（= BPTT 長度）。越大記憶越長但越吃 GPU。 |
-| `--policy.obs_stride` | 1 | 幀間跳幾格。**第一版固定 1**；改 >1 需同步改評估端（見 how_it_works §關鍵設計）。 |
+| `--policy.seq_len` | 96 | 每個訓練樣本取幾個時間點（= BPTT 長度）。有效覆蓋長度是 `(seq_len-1)*obs_stride+1` 幀。 |
+| `--policy.obs_stride` | 8 | 每隔幾幀取一次觀測。`seq_len=96, obs_stride=8` 覆蓋 761 幀；eval policy 會用同一個 stride 更新 hidden state。 |
 | `--policy.image_size` | 96 | 影像 resize 邊長。降低最省記憶體。 |
 | `--policy.hidden_size` | 512 | LSTM 隱藏維度。 |
 | `--policy.use_gradient_checkpointing` | true | 用重算換記憶體，長序列必開。 |
@@ -87,7 +104,7 @@ ls -R LSTM/outputs/ns0_v1/checkpoints/ | head
 
 1. `--batch_size=1`
 2. `--policy.image_size=64`
-3. `--policy.seq_len` 調小（如 64）—— 但對 ns=0 影響小，對高洗牌數會犧牲記憶
+3. 提高 `--policy.obs_stride` 或調小 `--policy.seq_len`；注意有效覆蓋長度要蓋過 reveal→act
 4. 確認 `--policy.use_gradient_checkpointing=true`
 
 ### ⚡ 加速：把 dataset 解碼成 image（一次性、持久化、可重用）
@@ -96,7 +113,7 @@ dataset 的相機是 AV1 影片，訓練每步都要 CPU 解碼 → 嚴重 CPU-b
 要練到 grasp 需要的 ~10 萬步，**先把影片解碼成圖片**（之後訓練不用解碼 → GPU-bound、快很多）：
 
 ```bash
-python LSTM/scripts/decode_dataset_to_images.py \
+python policies/lstm/scripts/decode_dataset_to_images.py \
   --src-repo johnnyli1220/shellbench-num_shuffles-3 \
   --src-root /root/.cache/huggingface/lerobot/johnnyli1220/shellbench-num_shuffles-3 \
   --dst-root /workspace/aicapstone/data/lerobot_img/johnnyli1220/shellbench-num_shuffles-3
@@ -116,18 +133,18 @@ python LSTM/scripts/decode_dataset_to_images.py \
 
 ```bash
 cd /workspace/aicapstone
-python LSTM/scripts/eval_lstm.py \
+python policies/lstm/scripts/eval_lstm.py \
   --task HCIS-ShellGame-SingleArm-v0 \
   --device cuda --enable_cameras --headless \
   --policy_backend lerobot \
   --policy_type lerobot-lstm \
-  --policy_checkpoint_path LSTM/outputs/ns0_v1c/checkpoints/001000/pretrained_model \
+  --policy_checkpoint_path outputs/lstm/ns0_v1c/checkpoints/001000/pretrained_model \
   --policy_action_horizon 1 \
   --num_episodes 20 \
   --num_cups 3 --num_shuffles 0 \
   --reveal_frames 50 --cover_frames 10 --shuffle_per_swap_frames 30 --act_frames 150 \
   --max_act_steps 600 \
-  --output_json LSTM/outputs/ns0_v1c/metrics.json
+  --output_json outputs/lstm/ns0_v1c/metrics.json
 ```
 
 > `--max_act_steps`（預設 600）：沒夾起杯子的 episode 會在 act 階段跑滿這麼多步就判 MISS 結束，
@@ -140,7 +157,7 @@ python LSTM/scripts/eval_lstm.py \
 > 註：VNC 看不到 Isaac 視窗是正常的——eval 用的是離線相機渲染，不需要可見視窗。
 > 另外：**評估前先停掉訓練**，兩個都吃 GPU，一起跑會搶資源。
 
-結果在 `LSTM/outputs/ns0_v1/metrics.json`（含 DSR/MSR/SR/κ 與每集細節）。
+結果在 `outputs/lstm/ns0_v1/metrics.json`（含 DSR/MSR/SR/κ 與每集細節）。
 
 > `--policy_action_horizon 1`：LSTM 是逐步推論，每幀輸出一個動作再重新觀測。
 
@@ -177,7 +194,7 @@ ns=0 球幾乎不動，記憶很簡單，所以 **DSR 應該明顯高於 1/3**�
 `--num_shuffles`），收集每個的 DSR，畫 DSR vs. num_shuffles，跟 ACT/Diffusion/Oracle 疊在一起。
 （每個 variant 同樣要先準備 dataset，見 §0.5。）
 
-> 自動化：可寫一份 `LSTM/configs/` 的 sweep，或擴充既有 `scripts/run_sweep.py`。
+> 自動化：可寫一份 `policies/lstm/configs/` 的 sweep，或擴充既有 `scripts/run_sweep.py`。
 > 注意 `run_sweep.py` 的 eval 是寫死呼叫 `scripts/eval_shell_game.py`（沒套我們的 patch），
 > 所以全自動 sweep 需要 (a) 讓 eval import register，或 (b) sweep 改呼叫 `eval_lstm.py`。
 > 這個整合留到 Phase 3 決定。

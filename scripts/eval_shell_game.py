@@ -27,6 +27,8 @@ import json
 import os
 import time
 
+os.environ["OMNI_KIT_ACCEPT_EULA"] = "YES"
+
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="ShellBench evaluation.")
@@ -287,6 +289,13 @@ def main():
     env_cfg.use_teleop_device("keyboard")
     env_cfg.seed = args_cli.seed
     env_cfg.episode_length_s = args_cli.episode_length_s
+    eval_log_root = os.path.join(
+        os.path.dirname(os.path.abspath(args_cli.output_json)),
+        "isaaclab_logs",
+        f"pid-{os.getpid()}",
+    )
+    os.makedirs(eval_log_root, exist_ok=True)
+    env_cfg.sim.log_dir = eval_log_root
 
     env_cfg.num_cups = args_cli.num_cups
     env_cfg.num_shuffles = args_cli.num_shuffles

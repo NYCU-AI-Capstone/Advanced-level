@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "leisaac @ git+https://github.com/LightwheelAI/leisaac.git#subdirectory=source/leisaac",
-    "lerobot==0.4.2",
+    "lerobot>=0.4.2,<0.4.5",
 ]
 
 [tool.setuptools]

@@ -29,7 +29,7 @@ ACT / Diffusion / VQ-BeT 比較記憶能力曲線。
         fps=30；episode 514–664 幀；2 cam 480×640；state=9 action=8
   - [x] 可共用組員既有 dataset（`johnnyli1220/shellbench-num_shuffles-{0..5}` 等，public）
 - [x] Phase 1：LSTM policy plugin（config + model + processor + register/patch）
-  - [x] 容器內 smoke test 通過：`python LSTM/scripts/smoke_test.py`（註冊 + BPTT + 推論記憶）
+  - [x] 容器內 smoke test 通過：`python policies/lstm/scripts/smoke_test.py`（註冊 + BPTT + 推論記憶）
 - [~] Phase 2：train/eval wrapper + 執行手冊
   - [x] `train_lstm.py`（容器內 `--help` 確認 lstm 已是 policy 選項、超參數變成 flag）
   - [x] `eval_lstm.py`（零侵入跑 eval_shell_game）
@@ -40,6 +40,6 @@ ACT / Diffusion / VQ-BeT 比較記憶能力曲線。
 ## 背景文件（repo 既有）
 
 - `documents/training_policy_survey.md` — policy 選型調查（LSTM 在 §6.1）
-- `advanced_docs/task_description.md` — ShellBench 任務定義
-- `advanced_docs/IMPLEMENT_RECORD.md` — 既有 task/datagen/eval 實作紀錄
+- `docs/shellbench/task_description.md` — ShellBench 任務定義
+- `docs/shellbench/IMPLEMENT_RECORD.md` — 既有 task/datagen/eval 實作紀錄
 - `scripts/eval_shell_game.py`, `scripts/run_sweep.py` — 整合接線點
