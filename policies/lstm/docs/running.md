@@ -51,34 +51,37 @@ python policies/lstm/scripts/decode_dataset_to_images.py \
   --dst-root data/lerobot_img/johnnyli1220/shellbench-num_shuffles-0
 ```
 
-## 1. 訓練（先用最簡單難度 num_shuffles=0 打通）
+## 1. 訓練
 
-dataset 準備好後（見 §0.5），跑：
+### 建議配置（含 cup classification head）
 
 ```bash
 cd /workspace/aicapstone
 python policies/lstm/scripts/train_lstm.py \
   --policy.type=lstm \
   --dataset.repo_id=johnnyli1220/shellbench-num_shuffles-0 \
-  --dataset.video_backend=pyav \
+  --dataset.root=/workspace/aicapstone/data/lerobot_img/johnnyli1220/shellbench-num_shuffles-0 \
   --policy.device=cuda \
-  --policy.seq_len=96 \
-  --policy.obs_stride=8 \
-  --policy.image_size=96 \
+  --policy.seq_len=200 \
+  --policy.obs_stride=3 \
+  --policy.image_size=160 \
+  --policy.cup_loss_weight=1.0 \
   --policy.push_to_hub=false \
-  --batch_size=2 \
-  --steps=5000 \
+  --batch_size=8 \
+  --steps=50000 \
   --num_workers=4 \
-  --save_freq=2500 \
-  --log_freq=100 \
+  --save_freq=10000 \
+  --log_freq=500 \
   --wandb.enable=false \
-  --output_dir=outputs/lstm/ns0_v1 \
-  --job_name=lstm_ns0_v1
+  --output_dir=outputs/lstm/ns0_160px_cup_v1 \
+  --job_name=lstm_ns0_160px_cup
 ```
 
-> **`--dataset.video_backend=pyav` 一定要加。** dataset 的相機畫面是 AV1 mp4，lerobot 預設用
-> torchcodec 解碼，但容器裡缺 FFmpeg 函式庫（`libtorchcodec` 載不起來）。PyAV 自帶 ffmpeg、
-> 容器已裝，切過去即可，不用裝任何東西。（評估端不受影響 —— 它的畫面來自 Isaac Sim 即時算，不解 dataset 影片。）
+> **用 decode 過的 image 版 dataset**（`--dataset.root` 指向 `data/lerobot_img/...`），
+> 不用加 `--dataset.video_backend=pyav`。如果用原始 video dataset，才需要加 pyav backend。
+
+> **長時間訓練用 tmux**：容器內 `apt-get install -y tmux`，
+> `tmux new -s train` 開 session，`Ctrl+B D` 離開，`tmux attach -t train` 回去。
 
 訓練完，checkpoint 會在 `outputs/lstm/ns0_v1/checkpoints/` 底下。
 確認實際路徑（lerobot 會建一個 `last` 指向最後一個 step）：
@@ -115,8 +118,23 @@ dataset 的相機是 AV1 影片，訓練每步都要 CPU 解碼 → 嚴重 CPU-b
 ```bash
 python policies/lstm/scripts/decode_dataset_to_images.py \
   --src-repo johnnyli1220/shellbench-num_shuffles-3 \
-  --src-root /root/.cache/huggingface/lerobot/johnnyli1220/shellbench-num_shuffles-3 \
-  --dst-root /workspace/aicapstone/data/lerobot_img/johnnyli1220/shellbench-num_shuffles-3
+  --src-root /workspace/aicapstone/data/raw/johnnyli1220/shellbench-num_shuffles-3 \
+  --dst-root /workspace/aicapstone/data/lerobot_img/johnnyli1220/shellbench-num_shuffles-3 \
+  --resize 160
+```
+
+> **`--resize 160` 建議加上**：存 160px 圖片（省空間也省 dataloader RAM）。
+> 模型內部的 `F.interpolate` 會再 resize 到 `--policy.image_size`，所以 decode 的解析度
+> 只要 >= 訓練用的 image_size 就好。
+
+下載 dataset 到掛載點（容器外或容器內皆可）：
+```bash
+python -c "
+from huggingface_hub import snapshot_download
+snapshot_download('johnnyli1220/shellbench-num_shuffles-3',
+                  repo_type='dataset',
+                  local_dir='/workspace/aicapstone/data/raw/johnnyli1220/shellbench-num_shuffles-3')
+"
 ```
 
 - **`--dst-root` 一定放 `data/` 底下**（= host 掛載點、持久化、已 .gitignore）。
@@ -138,13 +156,13 @@ python policies/lstm/scripts/eval_lstm.py \
   --device cuda --enable_cameras --headless \
   --policy_backend lerobot \
   --policy_type lerobot-lstm \
-  --policy_checkpoint_path outputs/lstm/ns0_v1c/checkpoints/001000/pretrained_model \
+  --policy_checkpoint_path outputs/lstm/ns0_160px_cup_v1/checkpoints/last/pretrained_model \
   --policy_action_horizon 1 \
   --num_episodes 20 \
   --num_cups 3 --num_shuffles 0 \
   --reveal_frames 50 --cover_frames 10 --shuffle_per_swap_frames 30 --act_frames 150 \
   --max_act_steps 600 \
-  --output_json outputs/lstm/ns0_v1c/metrics.json
+  --output_json outputs/lstm/ns0_160px_cup_v1/metrics.json
 ```
 
 > `--max_act_steps`（預設 600）：沒夾起杯子的 episode 會在 act 階段跑滿這麼多步就判 MISS 結束，

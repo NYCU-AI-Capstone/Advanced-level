@@ -95,9 +95,18 @@ class LSTMPolicy(PreTrainedPolicy):
             nn.Linear(config.hidden_size, action_dim * config.action_horizon),
         )
 
+        # cup classification head（解決 MSE mode averaging：強制 LSTM 學會
+        # 根據記憶區分不同杯子，提供離散的梯度信號）
+        self.cup_head = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size // 4),
+            nn.ReLU(),
+            nn.Linear(config.hidden_size // 4, config.num_cups),
+        )
+
         # 推論用的 hidden state（跨 select_action 呼叫攜帶；命名刻意避開 eval
         # 的 _clear_cached_actions() 會掃到的 action_queue 之類欄位）
         self._lstm_state: tuple[Tensor, Tensor] | None = None
+        self._cup_logits: Tensor | None = None
 
         # 推論 stride：每 N 次 select_action 呼叫才把 hidden state 往前推進一次。
         # 每次呼叫仍會用當前 observation + 最近的 hidden state 產生 action，避免 act 階段

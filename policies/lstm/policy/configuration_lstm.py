@@ -55,6 +55,10 @@ class LSTMConfig(PreTrainedConfig):
     state_feature_dim: int = 128  # proprioception 經一層 MLP 後的維度
     dropout: float = 0.1
 
+    # --- cup classification head（解決 MSE mode averaging）--------------------
+    num_cups: int = 3
+    cup_loss_weight: float = 1.0  # CE loss 的權重（相對 MSE）
+
     # --- 記憶體節省 ------------------------------------------------------------
     # 對 backbone 的逐幀前向做 gradient checkpointing（用重算換記憶體），
     # 讓長序列 + 多相機在 4090 24GB 上跑得動。
